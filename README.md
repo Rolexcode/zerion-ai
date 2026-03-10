@@ -15,20 +15,35 @@ It also ships one flagship workflow:
 
 ![Wallet analysis demo](./assets/demo-wallet-analysis.svg)
 
-## 1. Get your Zerion API key
+## 1. Choose your authentication method
 
-Start here: [Get your API key](https://dashboard.zerion.io)
+### Option A: x402 Pay-per-call (Recommended for agents)
 
-Useful current docs:
+**No API key needed.** Pay $0.01 USDC per request on Base. Your agent's wallet handles payment automatically via the [x402 protocol](https://www.x402.org/).
 
-- [Build with AI](https://developers.zerion.io/reference/building-with-ai)
-- [Get Wallet Data With Zerion API](https://developers.zerion.io/reference/getting-started)
+```bash
+zerion-cli wallet analyze 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 --x402
+```
 
-As of March 8, 2026, Zerion's public authentication docs describe:
+Or set the environment variable:
+
+```bash
+export ZERION_X402=true
+zerion-cli wallet analyze 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+```
+
+### Option B: API Key
+
+Get an API key for higher rate limits and production use: [Get your API key](https://dashboard.zerion.io)
 
 - API auth via **HTTP Basic Auth**
 - dev keys beginning with `zk_dev_`
 - current dev-key limits of **120 requests/minute** and **5k requests/day**
+
+Useful docs:
+
+- [Build with AI](https://developers.zerion.io/reference/building-with-ai)
+- [Get Wallet Data With Zerion API](https://developers.zerion.io/reference/getting-started)
 
 ## 2. Choose your integration path
 
@@ -75,6 +90,15 @@ Start here:
    ```
 
 ### CLI quickstart
+
+**With x402 (no API key needed):**
+
+```bash
+npm install -g zerion-cli
+zerion-cli wallet analyze 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 --x402
+```
+
+**With API key:**
 
 ```bash
 npm install -g zerion-cli

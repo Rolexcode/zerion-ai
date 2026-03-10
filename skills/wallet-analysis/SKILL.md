@@ -36,6 +36,10 @@ If the environment supports MCP, prefer the hosted Zerion MCP and ask directly f
 If the environment expects commands, run:
 
 ```bash
+# With x402 (no API key needed, pay $0.01 USDC per request)
+zerion-cli wallet analyze <wallet> --x402
+
+# With API key
 zerion-cli wallet analyze <wallet>
 zerion-cli wallet analyze <wallet> --positions defi
 ```
@@ -43,12 +47,19 @@ zerion-cli wallet analyze <wallet> --positions defi
 Or fetch the pieces explicitly:
 
 ```bash
-zerion-cli wallet portfolio <wallet>
-zerion-cli wallet positions <wallet>
-zerion-cli wallet positions <wallet> --positions defi
-zerion-cli wallet transactions <wallet> --limit 10
-zerion-cli wallet pnl <wallet>
+zerion-cli wallet portfolio <wallet> [--x402]
+zerion-cli wallet positions <wallet> [--x402]
+zerion-cli wallet positions <wallet> --positions defi [--x402]
+zerion-cli wallet transactions <wallet> --limit 10 [--x402]
+zerion-cli wallet pnl <wallet> [--x402]
 ```
+
+## Authentication
+
+Two options:
+
+1. **x402 pay-per-call** - No signup, pay $0.01 USDC per request on Base. Use `--x402` flag or `ZERION_X402=true`.
+2. **API key** - Get from [dashboard.zerion.io](https://dashboard.zerion.io). Higher rate limits for production.
 
 ## Output
 

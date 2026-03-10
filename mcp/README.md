@@ -20,6 +20,20 @@ Use the CLI path when your environment expects shell commands returning JSON.
 
 ## Authentication
 
+Two options:
+
+### Option 1: x402 Pay-per-call (Recommended for agents)
+
+No API key needed. Pay $0.01 USDC per request on Base via the [x402 protocol](https://www.x402.org/).
+
+```bash
+export ZERION_X402=true
+```
+
+Your agent's wallet handles payment automatically.
+
+### Option 2: API Key
+
 1. Get a Zerion API key:
    https://dashboard.zerion.io
 2. Export it:
