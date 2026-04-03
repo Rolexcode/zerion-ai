@@ -26,6 +26,8 @@ function isSolanaKey(key) {
   return !key.startsWith("0x") && BASE58_RE.test(key) && key.length >= 80;
 }
 
+const HAS_SOLANA_KEY = !!(SOLANA_PRIVATE_KEY || isSolanaKey(WALLET_PRIVATE_KEY));
+
 let _x402Fetch = null;
 async function getX402Fetch() {
   if (_x402Fetch) return _x402Fetch;
@@ -44,10 +46,11 @@ async function getX402Fetch() {
   const { wrapFetchWithPayment, x402Client } = await import("@x402/fetch");
   const client = new x402Client();
 
+  if (EVM_PRIVATE_KEY && !isEvmKey(EVM_PRIVATE_KEY)) {
+    throw new Error("EVM_PRIVATE_KEY must be a 0x-prefixed hex string.");
+  }
+
   if (evmKey) {
-    if (!isEvmKey(evmKey)) {
-      throw new Error("EVM_PRIVATE_KEY must be a 0x-prefixed hex string.");
-    }
     const { registerExactEvmScheme } = await import("@x402/evm/exact/client");
     const { privateKeyToAccount } = await import("viem/accounts");
     const signer = privateKeyToAccount(evmKey);
@@ -62,6 +65,10 @@ async function getX402Fetch() {
     const signer = await createKeyPairSignerFromBytes(keyBytes);
     registerExactSvmScheme(client, { signer });
     debugLog(`x402 registered: Solana (${signer.address})`);
+  }
+
+  if (PREFER_SOLANA && !(evmKey && solKey)) {
+    debugLog("x402 warning: ZERION_X402_PREFER_SOLANA=true has no effect unless both EVM and Solana keys are set");
   }
 
   if (evmKey && solKey && PREFER_SOLANA) {
@@ -149,8 +156,7 @@ async function fetchAPI(pathname, params = {}, useX402 = false) {
   let response = await fetchFn(url, { headers });
 
   // Retry on 402 only for Solana — facilitator fee-payer rotation can cause transient failures
-  const hasSolanaKey = !!(SOLANA_PRIVATE_KEY || isSolanaKey(WALLET_PRIVATE_KEY));
-  for (let attempt = 1; useX402 && hasSolanaKey && response.status === 402 && attempt <= 2; attempt++) {
+  for (let attempt = 1; useX402 && HAS_SOLANA_KEY && response.status === 402 && attempt <= 2; attempt++) {
     debugLog(`x402 payment failed, retry ${attempt}/2...`);
     response = await fetchFn(url, { headers });
   }
