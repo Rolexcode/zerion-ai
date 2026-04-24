@@ -371,6 +371,9 @@ bot.command('watch', async (ctx) => {
 });
 
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
+// Keep Render web service alive
+import http from 'http';
+http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env.PORT || 3000);
 
 bot.launch();
 
