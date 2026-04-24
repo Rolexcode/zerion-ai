@@ -1,7 +1,8 @@
 import 'dotenv/config';
+import http from 'http';
 import { Telegraf, session, Markup } from 'telegraf';
 import { scheduleMonitoring, stopMonitoring } from './monitor.js';
-import { getUserPolicy, setUserPolicy, evaluatePolicy } from './policies.js';
+import { getUserPolicy, setUserPolicy } from './policies.js';
 import { getPortfolio, getPositions } from './utils.js';
 import { saveWatcher, loadWatcher, deleteWatcher, savePolicy } from './store.js';
 
@@ -9,7 +10,7 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 bot.use(session());
 
-// ─── START ───────────────────────────────────────────────────────────────────
+// ─── START ────────────────────────────────────────────────────────────────────
 
 bot.start((ctx) => {
   ctx.session ??= {};
@@ -36,8 +37,7 @@ bot.action('mode_protect', async (ctx) => {
   ctx.reply(
     `🛡️ *Protection Mode*\n\n` +
     `ZenGuard will monitor your wallet and automatically swap to USDC if your rules are triggered.\n\n` +
-    `Your private key is encrypted and never stored in plain text. ` +
-    `All trades route through Zerion with spend limits you control.\n\n` +
+    `Your private key is encrypted with AES-256 and never stored in plain text.\n\n` +
     `*Do you have an existing wallet?*`,
     {
       parse_mode: 'Markdown',
@@ -53,6 +53,7 @@ bot.action('mode_watch', async (ctx) => {
   await ctx.answerCbQuery();
   ctx.session ??= {};
   ctx.session.awaitingWatchAddress = true;
+  ctx.session.awaitingImport = false;
   ctx.reply(
     `🔍 *Surveillance Mode*\n\n` +
     `Watch any public wallet — a dev wallet, a whale, or your own.\n\n` +
@@ -70,11 +71,12 @@ bot.action('wallet_import', async (ctx) => {
   await ctx.answerCbQuery();
   ctx.session ??= {};
   ctx.session.awaitingImport = true;
+  ctx.session.awaitingWatchAddress = false;
   ctx.reply(
     `📥 *Import Wallet*\n\n` +
-    `Send your Solana wallet address to begin.\n\n` +
-    `⚠️ ZenGuard only needs your *public address* for monitoring.\n` +
-    `Private key setup is handled securely via Zerion agent tokens — never stored here.`,
+    `Paste your Solana wallet address to begin monitoring.\n\n` +
+    `⚠️ ZenGuard only needs your *public address* for now.\n` +
+    `Private key import for auto-trading coming next.`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -83,8 +85,8 @@ bot.action('wallet_create', async (ctx) => {
   await ctx.answerCbQuery();
   ctx.reply(
     `✨ *Create New Wallet*\n\n` +
-    `This feature is coming soon.\n\n` +
-    `For now, use *Import My Wallet* with your existing Solana address.`,
+    `Coming soon.\n\n` +
+    `Use *Import My Wallet* with your existing Solana address for now.`,
     {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
@@ -99,19 +101,16 @@ bot.action('wallet_create', async (ctx) => {
 bot.on('text', async (ctx) => {
   ctx.session ??= {};
 
-  // Handle watch address input
+  if (ctx.message.text.startsWith('/')) return;
+
+  // Wallet address input
   if (ctx.session.awaitingWatchAddress || ctx.session.awaitingImport) {
     const address = ctx.message.text.trim();
-
-    if (address.startsWith('/')) return;
-
     const isSolana = address.length >= 32 && address.length <= 44;
     const isEVM = address.startsWith('0x') && address.length === 42;
 
     if (!isSolana && !isEVM) {
-      return ctx.reply(
-        '⚠️ That doesn\'t look like a valid wallet address.\n\nPaste a Solana or EVM address.'
-      );
+      return ctx.reply('⚠️ Invalid address. Paste a Solana or EVM wallet address.');
     }
 
     ctx.session.watchedWallet = address;
@@ -121,12 +120,9 @@ bot.on('text', async (ctx) => {
     await saveWatcher(ctx.from.id, address);
     await scheduleMonitoring(address, ctx);
 
-    const mode = ctx.session.awaitingImport ? '🛡️ Protection' : '🔍 Surveillance';
-
-    ctx.reply(
+    await ctx.reply(
       `✅ *Wallet Added*\n\n` +
-      `\`${address.slice(0, 6)}...${address.slice(-4)}\`\n` +
-      `Mode: ${mode}\n\n` +
+      `\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n` +
       `Now set your guard rules:`,
       {
         parse_mode: 'Markdown',
@@ -138,7 +134,7 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Handle custom policy input
+  // Custom policy input
   if (ctx.session.awaitingCustomPolicy) {
     const input = parseFloat(ctx.message.text);
 
@@ -169,7 +165,7 @@ bot.on('text', async (ctx) => {
     await savePolicy(ctx.from.id, data);
     ctx.session.awaitingCustomPolicy = false;
 
-    ctx.reply(
+    await ctx.reply(
       `✅ *Custom rule saved*\n\n` +
       `ZenGuard will alert you if any position drops more than *${input}%* in 24h.\n\n` +
       `Use /status to view your active guard.`,
@@ -180,8 +176,8 @@ bot.on('text', async (ctx) => {
 
 // ─── POLICY ───────────────────────────────────────────────────────────────────
 
-bot.action('show_policy', (ctx) => {
-  ctx.answerCbQuery();
+bot.action('show_policy', async (ctx) => {
+  await ctx.answerCbQuery();
   showPolicyMenu(ctx);
 });
 
@@ -220,18 +216,22 @@ bot.action(/policy_((?!custom).+)/, async (ctx) => {
     return ctx.answerCbQuery('No wallet found. Use /start to begin.');
   }
 
-  await setUserPolicy(ctx.from.id, wallet, rule);
-  await ctx.answerCbQuery('Rule saved.');
+  try {
+    await setUserPolicy(ctx.from.id, wallet, rule);
+    await ctx.answerCbQuery('Rule saved.');
+    const policy = await getUserPolicy(ctx.from.id);
 
-  const policy = await getUserPolicy(ctx.from.id);
-
-  ctx.reply(
-    `✅ *Rule saved*\n\n` +
-    `${policy.config.label}\n\n` +
-    `ZenGuard is now watching \`${wallet.slice(0, 6)}...${wallet.slice(-4)}\`\n\n` +
-    `Use /status to view your guard anytime.`,
-    { parse_mode: 'Markdown' }
-  );
+    await ctx.reply(
+      `✅ *Rule saved*\n\n` +
+      `${policy.config.label}\n\n` +
+      `ZenGuard is watching \`${wallet.slice(0, 6)}...${wallet.slice(-4)}\`\n\n` +
+      `Use /status to view your guard.`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    console.error('[bot] Policy error:', err.message);
+    ctx.reply('⚠️ Could not save policy. Try again.');
+  }
 });
 
 bot.action('policy_custom', async (ctx) => {
@@ -241,7 +241,7 @@ bot.action('policy_custom', async (ctx) => {
   ctx.reply(
     `✏️ *Custom Drop Threshold*\n\n` +
     `Enter the % drop that should trigger an alert.\n\n` +
-    `Example: type *15* for 15% drop`,
+    `Example: type *15* for 15%`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -249,32 +249,35 @@ bot.action('policy_custom', async (ctx) => {
 // ─── STATUS ───────────────────────────────────────────────────────────────────
 
 bot.command('status', async (ctx) => {
-  const [policy, address] = await Promise.all([
-    getUserPolicy(ctx.from.id),
-    loadWatcher(ctx.from.id),
-  ]);
+  try {
+    const [policy, address] = await Promise.all([
+      getUserPolicy(ctx.from.id),
+      loadWatcher(ctx.from.id),
+    ]);
 
-  if (!policy || !address) {
-    return ctx.reply(
-      '🔴 No active guards.\n\nUse /start to set up wallet monitoring.',
-    );
-  }
-
-  ctx.reply(
-    `🛡️ *ZenGuard Active*\n\n` +
-    `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n` +
-    `Rule: ${policy.config.label}\n` +
-    `Monitoring since: ${new Date(policy.since).toUTCString()}\n\n` +
-    `Checks run every minute. You'll be alerted immediately if rules are triggered.`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('⚙️ Change Rules', 'show_policy')],
-        [Markup.button.callback('📊 Analyze Wallet', 'analyze_watched')],
-        [Markup.button.callback('🔴 Stop Monitoring', 'stop_monitoring')],
-      ]),
+    if (!policy || !address) {
+      return ctx.reply('🔴 No active guards.\n\nUse /start to set up wallet monitoring.');
     }
-  );
+
+    await ctx.reply(
+      `🛡️ *ZenGuard Active*\n\n` +
+      `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n` +
+      `Rule: ${policy.config.label}\n` +
+      `Since: ${new Date(policy.since).toUTCString()}\n\n` +
+      `Checks run every 5 minutes.`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('⚙️ Change Rules', 'show_policy')],
+          [Markup.button.callback('📊 Analyze Wallet', 'analyze_watched')],
+          [Markup.button.callback('🔴 Stop Monitoring', 'stop_monitoring')],
+        ]),
+      }
+    );
+  } catch (err) {
+    console.error('[bot] Status error:', err.message);
+    ctx.reply('⚠️ Could not load status. Try again.');
+  }
 });
 
 // ─── ANALYZE ──────────────────────────────────────────────────────────────────
@@ -354,9 +357,7 @@ bot.command('watch', async (ctx) => {
   const parts = ctx.message.text.split(' ');
   const address = parts[1];
 
-  if (!address) {
-    return ctx.reply('Usage: /watch <wallet_address>');
-  }
+  if (!address) return ctx.reply('Usage: /watch <wallet_address>');
 
   ctx.session ??= {};
   ctx.session.watchedWallet = address;
@@ -370,10 +371,11 @@ bot.command('watch', async (ctx) => {
   );
 });
 
-// ─── LAUNCH ───────────────────────────────────────────────────────────────────
-// Keep Render web service alive
-import http from 'http';
+// ─── KEEP ALIVE ───────────────────────────────────────────────────────────────
+
 http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env.PORT || 3000);
+
+// ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
 bot.launch();
 

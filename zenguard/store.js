@@ -32,3 +32,15 @@ export async function loadWatcher(userId) {
 export async function deleteWatcher(userId) {
   await redis.del(`zenguard:watcher:${userId}`);
 }
+
+export async function saveEncryptedKey(userId, encryptedKey) {
+  await redis.set(`zenguard:key:${userId}`, encryptedKey);
+}
+
+export async function loadEncryptedKey(userId) {
+  return await redis.get(`zenguard:key:${userId}`);
+}
+
+export async function deleteEncryptedKey(userId) {
+  await redis.del(`zenguard:key:${userId}`);
+}
