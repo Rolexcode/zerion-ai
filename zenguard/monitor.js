@@ -1,11 +1,12 @@
 import cron from 'node-cron';
 import { getPortfolio, getPositions } from './utils.js';
 import { evaluatePolicy } from './policies.js';
+import { loadChatId } from './store.js';
 
 const activeMonitors = new Map();
 const alertCooldowns = new Map();
 
-const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour per token
+const COOLDOWN_MS = 60 * 60 * 1000;
 
 function isOnCooldown(address, token) {
   const key = `${address}:${token}`;
@@ -15,12 +16,14 @@ function isOnCooldown(address, token) {
 }
 
 function setCooldown(address, token) {
-  const key = `${address}:${token}`;
-  alertCooldowns.set(key, Date.now());
+  alertCooldowns.set(`${address}:${token}`, Date.now());
 }
 
 export async function scheduleMonitoring(address, ctx) {
   if (activeMonitors.has(address)) return;
+
+  const userId = ctx.from.id;
+  const chatId = ctx.chat.id;
 
   const task = cron.schedule('*/5 * * * *', async () => {
     try {
@@ -29,12 +32,13 @@ export async function scheduleMonitoring(address, ctx) {
         getPositions(address),
       ]);
 
-      const threat = await evaluatePolicy(ctx.from.id, portfolio, positions);
+      const threat = await evaluatePolicy(userId, portfolio, positions);
 
       if (threat.triggered && !isOnCooldown(address, threat.token)) {
         setCooldown(address, threat.token);
 
-        await ctx.reply(
+        await ctx.telegram.sendMessage(
+          chatId,
           `🚨 *ZenGuard Alert*\n\n` +
           `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n` +
           `Threat: ${threat.reason}\n` +

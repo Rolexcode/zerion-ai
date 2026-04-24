@@ -1,12 +1,18 @@
 import 'dotenv/config';
 import http from 'http';
 import { Telegraf, session, Markup } from 'telegraf';
+import { Redis } from '@upstash/redis';
 import { scheduleMonitoring, stopMonitoring } from './monitor.js';
 import { getUserPolicy, setUserPolicy } from './policies.js';
 import { getPortfolio, getPositions } from './utils.js';
-import { saveWatcher, loadWatcher, deleteWatcher, savePolicy } from './store.js';
+import { saveWatcher, loadWatcher, deleteWatcher, savePolicy, saveChatId, loadChatId } from './store.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
 bot.use(session());
 
@@ -103,7 +109,6 @@ bot.on('text', async (ctx) => {
 
   if (ctx.message.text.startsWith('/')) return;
 
-  // Wallet address input
   if (ctx.session.awaitingWatchAddress || ctx.session.awaitingImport) {
     const address = ctx.message.text.trim();
     const isSolana = address.length >= 32 && address.length <= 44;
@@ -118,6 +123,7 @@ bot.on('text', async (ctx) => {
     ctx.session.awaitingImport = false;
 
     await saveWatcher(ctx.from.id, address);
+    await saveChatId(ctx.from.id, ctx.chat.id);
     await scheduleMonitoring(address, ctx);
 
     await ctx.reply(
@@ -134,7 +140,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Custom policy input
   if (ctx.session.awaitingCustomPolicy) {
     const input = parseFloat(ctx.message.text);
 
@@ -363,6 +368,7 @@ bot.command('watch', async (ctx) => {
   ctx.session.watchedWallet = address;
 
   await saveWatcher(ctx.from.id, address);
+  await saveChatId(ctx.from.id, ctx.chat.id);
   await scheduleMonitoring(address, ctx);
 
   ctx.reply(
@@ -371,12 +377,38 @@ bot.command('watch', async (ctx) => {
   );
 });
 
+// ─── RESTORE MONITORS ON STARTUP ─────────────────────────────────────────────
+
+async function restoreMonitors() {
+  try {
+    const keys = await redis.keys('zenguard:watcher:*');
+    for (const key of keys) {
+      const userId = key.split(':')[2];
+      const address = await redis.get(key);
+      const chatId = await loadChatId(userId);
+
+      if (address && chatId) {
+        const fakeCtx = {
+          from: { id: Number(userId) },
+          chat: { id: Number(chatId) },
+          telegram: bot.telegram,
+        };
+        await scheduleMonitoring(address, fakeCtx);
+        console.log(`[startup] Restored monitor for ${address}`);
+      }
+    }
+  } catch (err) {
+    console.error('[startup] Restore failed:', err.message);
+  }
+}
+
 // ─── KEEP ALIVE ───────────────────────────────────────────────────────────────
 
 http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env.PORT || 3000);
 
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
+restoreMonitors();
 bot.launch();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));

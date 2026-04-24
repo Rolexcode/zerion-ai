@@ -44,3 +44,11 @@ export async function loadEncryptedKey(userId) {
 export async function deleteEncryptedKey(userId) {
   await redis.del(`zenguard:key:${userId}`);
 }
+
+export async function saveChatId(userId, chatId) {
+  await redis.set(`zenguard:chat:${userId}`, chatId.toString());
+}
+
+export async function loadChatId(userId) {
+  return await redis.get(`zenguard:chat:${userId}`);
+}
