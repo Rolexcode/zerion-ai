@@ -3,11 +3,26 @@ import { getPortfolio, getPositions } from './utils.js';
 import { evaluatePolicy } from './policies.js';
 
 const activeMonitors = new Map();
+const alertCooldowns = new Map();
+
+const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour per token
+
+function isOnCooldown(address, token) {
+  const key = `${address}:${token}`;
+  const last = alertCooldowns.get(key);
+  if (!last) return false;
+  return Date.now() - last < COOLDOWN_MS;
+}
+
+function setCooldown(address, token) {
+  const key = `${address}:${token}`;
+  alertCooldowns.set(key, Date.now());
+}
 
 export async function scheduleMonitoring(address, ctx) {
   if (activeMonitors.has(address)) return;
 
-  const task = cron.schedule('* * * * *', async () => {
+  const task = cron.schedule('*/5 * * * *', async () => {
     try {
       const [portfolio, positions] = await Promise.all([
         getPortfolio(address),
@@ -16,7 +31,9 @@ export async function scheduleMonitoring(address, ctx) {
 
       const threat = await evaluatePolicy(ctx.from.id, portfolio, positions);
 
-      if (threat.triggered) {
+      if (threat.triggered && !isOnCooldown(address, threat.token)) {
+        setCooldown(address, threat.token);
+
         await ctx.reply(
           `🚨 *ZenGuard Alert*\n\n` +
           `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n` +

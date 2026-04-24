@@ -13,7 +13,7 @@
     "README.md",
     "LICENSE"
   ],
-"scripts": {
+  "scripts": {
     "start": "node zenguard/bot.js",
     "test": "node --test tests/*.test.mjs",
     "test:unit": "node --test tests/unit.test.mjs tests/tool-catalog.test.mjs tests/examples.test.mjs tests/consistency.test.mjs",
@@ -43,6 +43,7 @@
   "dependencies": {
     "@open-wallet-standard/core": "^1.2.4",
     "@solana/web3.js": "^1.98.4",
+    "@upstash/redis": "^1.37.0",
     "@x402/evm": "^2.6.0",
     "@x402/fetch": "^2.6.0",
     "@x402/svm": "^2.8.0",
