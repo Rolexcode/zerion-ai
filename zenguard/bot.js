@@ -1,11 +1,14 @@
 import 'dotenv/config';
-import http from 'http';
+import express from 'express';
 import { Telegraf, session, Markup } from 'telegraf';
 import { Redis } from '@upstash/redis';
 import { scheduleMonitoring, stopMonitoring } from './monitor.js';
 import { getUserPolicy, setUserPolicy } from './policies.js';
 import { getPortfolio, getPositions } from './utils.js';
 import { saveWatcher, loadWatcher, deleteWatcher, savePolicy, saveChatId, loadChatId } from './store.js';
+
+const app = express();
+app.use(express.json());
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
@@ -269,7 +272,7 @@ bot.command('status', async (ctx) => {
       `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n` +
       `Rule: ${policy.config.label}\n` +
       `Since: ${new Date(policy.since).toUTCString()}\n\n` +
-      `Checks run every 5 minutes.`,
+      `Checks run every 15 minutes.`,
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
@@ -402,34 +405,21 @@ async function restoreMonitors() {
   }
 }
 
-// ─── KEEP ALIVE ───────────────────────────────────────────────────────────────
-
-http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env.PORT || 3000);
-
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
-restoreMonitors();
-// bot.launch({ dropPendingUpdates: true });
-// ─── LAUNCH ───────────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 3000;
+const WEBHOOK_URL = `https://zerion-ai-gt22.onrender.com/webhook`;
 
 async function launch() {
-  try {
-    // Force-clear any existing webhook or polling session
-    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-  } catch (e) {
-    console.log('[launch] Webhook clear skipped:', e.message);
-  }
-
-  bot.launch({ dropPendingUpdates: true });
-  console.log('[launch] ZenGuard is running.');
+  await bot.telegram.setWebhook(WEBHOOK_URL);
+  app.use(bot.webhookCallback('/webhook'));
+  app.get('/', (req, res) => res.send('ZenGuard running.'));
+  app.listen(PORT, () => console.log(`[server] Listening on port ${PORT}`));
+  await restoreMonitors();
+  console.log('[launch] ZenGuard running via webhook.');
 }
 
-restoreMonitors();
 launch();
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
