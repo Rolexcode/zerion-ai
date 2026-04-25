@@ -421,37 +421,26 @@ async function restoreMonitors() {
 }
 
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
+// ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
-const WEBHOOK_URL = `https://zerion-ai-gt22.onrender.com/webhook`;
+
+// Keep Render web service alive
+app.get('/', (req, res) => res.send('ZenGuard running.'));
+app.listen(PORT, () => console.log(`[server] Listening on port ${PORT}`));
 
 async function launch() {
-  await bot.telegram.setWebhook(WEBHOOK_URL);
-  
-  // Register webhook BEFORE listen
-  app.use(bot.webhookCallback('/webhook'));
-  app.get('/', (req, res) => res.send('ZenGuard running.'));
-  
-  // Add debug to confirm requests arriving
-  app.use((req, res, next) => {
-    console.log('[webhook] Incoming:', req.method, req.path);
-    next();
-  });
+  // Clear any existing webhook before polling
+  await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+  console.log('[launch] Webhook cleared.');
 
-  app.listen(PORT, () => console.log(`[server] Listening on port ${PORT}`));
-  
   await restoreMonitors();
-  console.log('[launch] ZenGuard running via webhook.');
+
+  bot.launch({ dropPendingUpdates: true });
+  console.log('[launch] ZenGuard running via polling.');
 }
 
 launch();
 
-process.once('SIGINT', () => {
-  console.log('[shutdown] SIGINT received.');
-  process.exit(0);
-});
-
-process.once('SIGTERM', () => {
-  console.log('[shutdown] SIGTERM received — staying alive for webhook.');
-  // Do not exit — Render will manage the process lifecycle
-});
+process.once('SIGINT', () => process.exit(0));
+process.once('SIGTERM', () => process.exit(0));
