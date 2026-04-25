@@ -25,7 +25,7 @@ export async function scheduleMonitoring(address, ctx) {
   const userId = ctx.from.id;
   const chatId = ctx.chat.id;
 
-  const task = cron.schedule('*/5 * * * *', async () => {
+  const task = cron.schedule('*/15 * * * *', async () => {
     try {
       const [portfolio, positions] = await Promise.all([
         getPortfolio(address),
