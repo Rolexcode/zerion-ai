@@ -409,7 +409,8 @@ http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
 restoreMonitors();
-bot.launch();
+bot.launch({ dropPendingUpdates: true });
+
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
