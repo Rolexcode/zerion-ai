@@ -429,17 +429,26 @@ app.get('/', (req, res) => res.send('ZenGuard running.'));
 app.listen(PORT, () => console.log(`[server] Listening on port ${PORT}`));
 
 async function launch() {
-  // Clear any existing webhook before polling
   await bot.telegram.deleteWebhook({ drop_pending_updates: true });
   console.log('[launch] Webhook cleared.');
 
   await restoreMonitors();
 
+  // Wait for any previous instance to fully terminate
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  
   bot.launch({ dropPendingUpdates: true });
   console.log('[launch] ZenGuard running via polling.');
 }
 
 launch();
 
-process.once('SIGINT', () => process.exit(0));
-process.once('SIGTERM', () => process.exit(0));
+process.once('SIGINT', () => {
+  bot.stop('SIGINT');
+  process.exit(0);
+});
+
+process.once('SIGTERM', () => {
+  bot.stop('SIGTERM');
+  process.exit(0);
+});
