@@ -427,9 +427,19 @@ const WEBHOOK_URL = `https://zerion-ai-gt22.onrender.com/webhook`;
 
 async function launch() {
   await bot.telegram.setWebhook(WEBHOOK_URL);
+  
+  // Register webhook BEFORE listen
   app.use(bot.webhookCallback('/webhook'));
   app.get('/', (req, res) => res.send('ZenGuard running.'));
+  
+  // Add debug to confirm requests arriving
+  app.use((req, res, next) => {
+    console.log('[webhook] Incoming:', req.method, req.path);
+    next();
+  });
+
   app.listen(PORT, () => console.log(`[server] Listening on port ${PORT}`));
+  
   await restoreMonitors();
   console.log('[launch] ZenGuard running via webhook.');
 }
