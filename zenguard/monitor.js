@@ -1,10 +1,10 @@
 import cron from 'node-cron';
 import { getPortfolio, getPositions } from './utils.js';
 import { evaluatePolicy } from './policies.js';
-import { loadChatId } from './store.js';
 
 const activeMonitors = new Map();
 const alertCooldowns = new Map();
+const restoringAddresses = new Set();
 
 const COOLDOWN_MS = 60 * 60 * 1000;
 
@@ -21,9 +21,12 @@ function setCooldown(address, token) {
 
 export async function scheduleMonitoring(address, ctx) {
   if (activeMonitors.has(address)) return;
+  if (restoringAddresses.has(address)) return;
+  restoringAddresses.add(address);
 
   const userId = ctx.from.id;
   const chatId = ctx.chat.id;
+  const telegram = ctx.telegram;
 
   const task = cron.schedule('*/15 * * * *', async () => {
     try {
@@ -37,7 +40,7 @@ export async function scheduleMonitoring(address, ctx) {
       if (threat.triggered && !isOnCooldown(address, threat.token)) {
         setCooldown(address, threat.token);
 
-        await ctx.telegram.sendMessage(
+        await telegram.sendMessage(
           chatId,
           `🚨 *ZenGuard Alert*\n\n` +
           `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n` +
@@ -59,5 +62,6 @@ export function stopMonitoring(address) {
   if (task) {
     task.stop();
     activeMonitors.delete(address);
+    restoringAddresses.delete(address);
   }
 }
