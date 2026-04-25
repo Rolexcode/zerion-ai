@@ -409,7 +409,26 @@ http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
 restoreMonitors();
-bot.launch({ dropPendingUpdates: true });
+// bot.launch({ dropPendingUpdates: true });
+// ─── LAUNCH ───────────────────────────────────────────────────────────────────
+
+async function launch() {
+  try {
+    // Force-clear any existing webhook or polling session
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+  } catch (e) {
+    console.log('[launch] Webhook clear skipped:', e.message);
+  }
+
+  bot.launch({ dropPendingUpdates: true });
+  console.log('[launch] ZenGuard is running.');
+}
+
+restoreMonitors();
+launch();
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
