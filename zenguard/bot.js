@@ -385,8 +385,13 @@ bot.command('watch', async (ctx) => {
 async function restoreMonitors() {
   try {
     const keys = await redis.keys('zenguard:watcher:*');
+    const seen = new Set();
+
     for (const key of keys) {
       const userId = key.split(':')[2];
+      if (seen.has(userId)) continue;
+      seen.add(userId);
+
       const address = await redis.get(key);
       const chatId = await loadChatId(userId);
 
@@ -421,5 +426,12 @@ async function launch() {
 
 launch();
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+  console.log('[shutdown] ZenGuard shutting down.');
+  process.exit(0);
+});
+
+process.once('SIGTERM', () => {
+  console.log('[shutdown] ZenGuard shutting down.');
+  process.exit(0);
+});
