@@ -437,11 +437,11 @@ async function launch() {
 launch();
 
 process.once('SIGINT', () => {
-  console.log('[shutdown] ZenGuard shutting down.');
+  console.log('[shutdown] SIGINT received.');
   process.exit(0);
 });
 
 process.once('SIGTERM', () => {
-  console.log('[shutdown] ZenGuard shutting down.');
-  process.exit(0);
+  console.log('[shutdown] SIGTERM received — staying alive for webhook.');
+  // Do not exit — Render will manage the process lifecycle
 });
