@@ -424,21 +424,30 @@ async function restoreMonitors() {
 
 const PORT = process.env.PORT || 3000;
 
-// Keep Render web service alive
 app.get('/', (req, res) => res.send('ZenGuard running.'));
 app.listen(PORT, () => console.log(`[server] Listening on port ${PORT}`));
+
+async function startPolling(retries = 5) {
+  try {
+    bot.launch({ dropPendingUpdates: true });
+    console.log('[launch] ZenGuard running via polling.');
+  } catch (err) {
+    if (err.response?.error_code === 409 && retries > 0) {
+      console.log(`[launch] 409 conflict, retrying in 5s... (${retries} left)`);
+      await new Promise(r => setTimeout(r, 5000));
+      await startPolling(retries - 1);
+    } else {
+      console.error('[launch] Failed to start:', err.message);
+    }
+  }
+}
 
 async function launch() {
   await bot.telegram.deleteWebhook({ drop_pending_updates: true });
   console.log('[launch] Webhook cleared.');
-
   await restoreMonitors();
-
-  // Wait for any previous instance to fully terminate
-  await new Promise(resolve => setTimeout(resolve, 3000));
-  
-  bot.launch({ dropPendingUpdates: true });
-  console.log('[launch] ZenGuard running via polling.');
+  await new Promise(r => setTimeout(r, 3000));
+  await startPolling();
 }
 
 launch();
