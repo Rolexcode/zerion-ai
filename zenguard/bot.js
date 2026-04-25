@@ -258,10 +258,15 @@ bot.action('policy_custom', async (ctx) => {
 
 bot.command('status', async (ctx) => {
   try {
+    console.log('[status] Request from:', ctx.from.id);
+    
     const [policy, address] = await Promise.all([
       getUserPolicy(ctx.from.id),
       loadWatcher(ctx.from.id),
     ]);
+
+    console.log('[status] Policy:', JSON.stringify(policy));
+    console.log('[status] Address:', address);
 
     if (!policy || !address) {
       return ctx.reply('🔴 No active guards.\n\nUse /start to set up wallet monitoring.');
@@ -284,7 +289,12 @@ bot.command('status', async (ctx) => {
     );
   } catch (err) {
     console.error('[bot] Status error:', err.message);
-    ctx.reply('⚠️ Could not load status. Try again.');
+    console.error('[bot] Status stack:', err.stack);
+    try {
+      await ctx.reply('⚠️ Could not load status. Try again.');
+    } catch (e) {
+      console.error('[bot] Reply also failed:', e.message);
+    }
   }
 });
 
