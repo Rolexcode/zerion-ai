@@ -1,21 +1,19 @@
 import 'dotenv/config';
-import express from 'express';
+import http from 'http';
 import { Telegraf, session, Markup } from 'telegraf';
-import { Redis } from '@upstash/redis';
 import { scheduleMonitoring, stopMonitoring } from './monitor.js';
-import { getUserPolicy, setUserPolicy } from './policies.js';
 import { getPortfolio, getPositions } from './utils.js';
-import { saveWatcher, loadWatcher, deleteWatcher, savePolicy, saveChatId, loadChatId } from './store.js';
-
-const app = express();
-app.use(express.json());
+import {
+  saveWatcher,
+  loadWatcher,
+  deleteWatcher,
+  addWatchedToken,
+  loadWatchedTokens,
+  removeWatchedToken,
+  clearWatchedTokens,
+} from './store.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
 
 bot.use(session());
 
@@ -26,14 +24,13 @@ bot.start((ctx) => {
   ctx.reply(
     `⚡ *Welcome to ZenGuard*\n\n` +
     `Your autonomous onchain bodyguard — powered by Zerion.\n\n` +
-    `ZenGuard watches crypto wallets 24/7 and alerts you the moment something goes wrong. ` +
-    `Set your rules once. We handle the rest.\n\n` +
+    `ZenGuard watches specific tokens in any wallet 24/7 and alerts you the moment something goes wrong.\n\n` +
     `*What would you like to do?*`,
     {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
-        [Markup.button.callback('🛡️ Protect My Wallet', 'mode_protect')],
-        [Markup.button.callback('🔍 Watch Any Wallet', 'mode_watch')],
+        [Markup.button.callback('🔍 Watch a Wallet', 'mode_watch')],
+        [Markup.button.callback('📊 My Active Guards', 'show_status')],
       ]),
     }
   );
@@ -41,262 +38,133 @@ bot.start((ctx) => {
 
 // ─── MODE SELECTION ───────────────────────────────────────────────────────────
 
-bot.action('mode_protect', async (ctx) => {
-  await ctx.answerCbQuery();
-  ctx.reply(
-    `🛡️ *Protection Mode*\n\n` +
-    `ZenGuard will monitor your wallet and automatically swap to USDC if your rules are triggered.\n\n` +
-    `Your private key is encrypted with AES-256 and never stored in plain text.\n\n` +
-    `*Do you have an existing wallet?*`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('📥 Import My Wallet', 'wallet_import')],
-        [Markup.button.callback('✨ Create New Wallet', 'wallet_create')],
-      ]),
-    }
-  );
-});
-
 bot.action('mode_watch', async (ctx) => {
   await ctx.answerCbQuery();
   ctx.session ??= {};
   ctx.session.awaitingWatchAddress = true;
-  ctx.session.awaitingImport = false;
   ctx.reply(
-    `🔍 *Surveillance Mode*\n\n` +
-    `Watch any public wallet — a dev wallet, a whale, or your own.\n\n` +
-    `ZenGuard will alert you instantly when:\n` +
-    `• Token prices drop sharply\n` +
-    `• Funds move to unexpected chains\n` +
-    `• Spend limits are breached\n\n` +
-    `Paste the wallet address you want to watch:`
+    `🔍 *Watch a Wallet*\n\n` +
+    `Paste any Solana or EVM wallet address.\n\n` +
+    `ZenGuard will fetch the holdings and let you pick which tokens to guard.`
   );
 });
 
-// ─── WALLET SETUP ─────────────────────────────────────────────────────────────
+// ─── HOLDINGS PICKER ──────────────────────────────────────────────────────────
 
-bot.action('wallet_import', async (ctx) => {
-  await ctx.answerCbQuery();
-  ctx.session ??= {};
-  ctx.session.awaitingImport = true;
-  ctx.session.awaitingWatchAddress = false;
-  ctx.reply(
-    `📥 *Import Wallet*\n\n` +
-    `Paste your Solana wallet address to begin monitoring.\n\n` +
-    `⚠️ ZenGuard only needs your *public address* for now.\n` +
-    `Private key import for auto-trading coming next.`,
-    { parse_mode: 'Markdown' }
-  );
-});
+async function showHoldingsPicker(ctx, address) {
+  const positions = ctx.session.positions ?? [];
 
-bot.action('wallet_create', async (ctx) => {
-  await ctx.answerCbQuery();
+  const buttons = positions.map((p) => {
+    const arrow = p.change >= 0 ? '📈' : '📉';
+    const label = `${arrow} ${p.symbol} — $${Number(p.value).toFixed(2)} (${Number(p.change).toFixed(1)}%)`;
+    return [Markup.button.callback(label, `pick_token_${p.symbol}`)];
+  });
+
+  buttons.push([Markup.button.callback('✅ Done selecting', 'done_picking')]);
+
   ctx.reply(
-    `✨ *Create New Wallet*\n\n` +
-    `Coming soon.\n\n` +
-    `Use *Import My Wallet* with your existing Solana address for now.`,
+    `💼 *Wallet Holdings*\n\n` +
+    `\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n` +
+    `Select the tokens you want ZenGuard to watch:\n` +
+    `_(tap a token to set your alert threshold)_`,
     {
       parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('📥 Import Instead', 'wallet_import')],
-      ]),
-    }
-  );
-});
-
-// ─── TEXT INPUT HANDLER ───────────────────────────────────────────────────────
-
-bot.on('text', async (ctx) => {
-  ctx.session ??= {};
-
-  if (ctx.message.text.startsWith('/')) return;
-
-  if (ctx.session.awaitingWatchAddress || ctx.session.awaitingImport) {
-    const address = ctx.message.text.trim();
-    const isSolana = address.length >= 32 && address.length <= 44;
-    const isEVM = address.startsWith('0x') && address.length === 42;
-
-    if (!isSolana && !isEVM) {
-      return ctx.reply('⚠️ Invalid address. Paste a Solana or EVM wallet address.');
-    }
-
-    ctx.session.watchedWallet = address;
-    ctx.session.awaitingWatchAddress = false;
-    ctx.session.awaitingImport = false;
-
-    await saveWatcher(ctx.from.id, address);
-    await saveChatId(ctx.from.id, ctx.chat.id);
-    await scheduleMonitoring(address, ctx);
-
-    await ctx.reply(
-      `✅ *Wallet Added*\n\n` +
-      `\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n` +
-      `Now set your guard rules:`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('⚙️ Set Protection Rules', 'show_policy')],
-        ]),
-      }
-    );
-    return;
-  }
-
-  if (ctx.session.awaitingCustomPolicy) {
-    const input = parseFloat(ctx.message.text);
-
-    if (isNaN(input) || input <= 0 || input > 100) {
-      return ctx.reply('⚠️ Enter a number between 1 and 100. Example: 15');
-    }
-
-    const wallet = ctx.session.watchedWallet ?? await loadWatcher(ctx.from.id);
-
-    if (!wallet) {
-      return ctx.reply('No wallet found. Use /start to begin.');
-    }
-
-    const data = {
-      wallet,
-      rule: `drop_${input}`,
-      config: {
-        label: `Alert if drop > ${input}%`,
-        dropThreshold: input / 100,
-        spendLimit: null,
-        chainLock: null,
-      },
-      since: new Date().toISOString(),
-      dailySpend: 0,
-      lastReset: Date.now(),
-    };
-
-    await savePolicy(ctx.from.id, data);
-    ctx.session.awaitingCustomPolicy = false;
-
-    await ctx.reply(
-      `✅ *Custom rule saved*\n\n` +
-      `ZenGuard will alert you if any position drops more than *${input}%* in 24h.\n\n` +
-      `Use /status to view your active guard.`,
-      { parse_mode: 'Markdown' }
-    );
-  }
-});
-
-// ─── POLICY ───────────────────────────────────────────────────────────────────
-
-bot.action('show_policy', async (ctx) => {
-  await ctx.answerCbQuery();
-  showPolicyMenu(ctx);
-});
-
-bot.command('policy', (ctx) => showPolicyMenu(ctx));
-
-function showPolicyMenu(ctx) {
-  ctx.reply(
-    `⚙️ *Set Guard Rules*\n\n` +
-    `Choose what triggers ZenGuard:\n\n` +
-    `🔻 *Drop alerts* — notify when a token drops sharply\n` +
-    `💵 *Spend limits* — alert if daily spend exceeds limit\n` +
-    `🔒 *Chain lock* — alert if funds move to another chain`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('🔻 Alert if drop > 20%', 'policy_drop_20')],
-        [Markup.button.callback('🔻 Alert if drop > 30%', 'policy_drop_30')],
-        [Markup.button.callback('✏️ Custom drop threshold', 'policy_custom')],
-        [Markup.button.callback('💵 Spend limit $50/day', 'policy_spend_50')],
-        [Markup.button.callback('💵 Spend limit $100/day', 'policy_spend_100')],
-        [Markup.button.callback('🔒 Lock to Solana only', 'policy_chain_solana')],
-        [Markup.button.callback('🔒 Lock to Base only', 'policy_chain_base')],
-        [Markup.button.callback('🔒 Lock to Ethereum only', 'policy_chain_ethereum')],
-        [Markup.button.callback('🔒 Lock to Arbitrum only', 'policy_chain_arbitrum')],
-        [Markup.button.callback('🌐 All chains — no lock', 'policy_chain_all')],
-      ]),
+      ...Markup.inlineKeyboard(buttons),
     }
   );
 }
 
-bot.action(/policy_((?!custom).+)/, async (ctx) => {
-  const rule = ctx.match[1];
-  const wallet = ctx.session?.watchedWallet ?? await loadWatcher(ctx.from.id);
+// ─── TOKEN SELECTION ──────────────────────────────────────────────────────────
 
-  if (!wallet) {
-    return ctx.answerCbQuery('No wallet found. Use /start to begin.');
-  }
-
-  try {
-    await setUserPolicy(ctx.from.id, wallet, rule);
-    await ctx.answerCbQuery('Rule saved.');
-    const policy = await getUserPolicy(ctx.from.id);
-
-    await ctx.reply(
-      `✅ *Rule saved*\n\n` +
-      `${policy.config.label}\n\n` +
-      `ZenGuard is watching \`${wallet.slice(0, 6)}...${wallet.slice(-4)}\`\n\n` +
-      `Use /status to view your guard.`,
-      { parse_mode: 'Markdown' }
-    );
-  } catch (err) {
-    console.error('[bot] Policy error:', err.message);
-    ctx.reply('⚠️ Could not save policy. Try again.');
-  }
-});
-
-bot.action('policy_custom', async (ctx) => {
+bot.action(/pick_token_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   ctx.session ??= {};
-  ctx.session.awaitingCustomPolicy = true;
+
+  const symbol = ctx.match[1];
+  const position = ctx.session.positions?.find(p => p.symbol === symbol);
+
+  if (!position) {
+    return ctx.reply('Token not found. Use /start to begin again.');
+  }
+
+  ctx.session.selectedToken = position;
+  ctx.session.awaitingThreshold = true;
+
   ctx.reply(
-    `✏️ *Custom Drop Threshold*\n\n` +
-    `Enter the % drop that should trigger an alert.\n\n` +
-    `Example: type *15* for 15%`,
+    `⚙️ *Set Alert Threshold for ${symbol}*\n\n` +
+    `Current price: $${Number(position.price).toFixed(6)}\n` +
+    `24h change: ${Number(position.change).toFixed(1)}%\n` +
+    `Position value: $${Number(position.value).toFixed(2)}\n\n` +
+    `Enter the % move that should trigger an alert.\n` +
+    `Example: type *20* to alert on 20% drop or pump`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.action('done_picking', async (ctx) => {
+  await ctx.answerCbQuery();
+  const tokens = await loadWatchedTokens(ctx.from.id);
+
+  if (!tokens.length) {
+    return ctx.reply('No tokens selected yet. Tap a token from the list to set a guard.');
+  }
+
+  const lines = tokens.map(t =>
+    `• *${t.token}* — alert at ${t.threshold}% move`
+  );
+
+  ctx.reply(
+    `🛡️ *Active Guards*\n\n` +
+    `${lines.join('\n')}\n\n` +
+    `ZenGuard is monitoring 24/7. Use /status to manage.`,
     { parse_mode: 'Markdown' }
   );
 });
 
 // ─── STATUS ───────────────────────────────────────────────────────────────────
 
-bot.command('status', async (ctx) => {
-  try {
-    console.log('[status] Request from:', ctx.from.id);
-    
-    const [policy, address] = await Promise.all([
-      getUserPolicy(ctx.from.id),
-      loadWatcher(ctx.from.id),
-    ]);
+bot.command('status', async (ctx) => showStatus(ctx));
+bot.action('show_status', async (ctx) => {
+  await ctx.answerCbQuery();
+  showStatus(ctx);
+});
 
-    console.log('[status] Policy:', JSON.stringify(policy));
-    console.log('[status] Address:', address);
+async function showStatus(ctx) {
+  const [tokens, address] = await Promise.all([
+    loadWatchedTokens(ctx.from.id),
+    loadWatcher(ctx.from.id),
+  ]);
 
-    if (!policy || !address) {
-      return ctx.reply('🔴 No active guards.\n\nUse /start to set up wallet monitoring.');
-    }
-
-    await ctx.reply(
-      `🛡️ *ZenGuard Active*\n\n` +
-      `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n` +
-      `Rule: ${policy.config.label}\n` +
-      `Since: ${new Date(policy.since).toUTCString()}\n\n` +
-      `Checks run every 15 minutes.`,
+  if (!tokens.length || !address) {
+    return ctx.reply(
+      '🔴 No active guards.\n\nUse /start to set up wallet monitoring.',
       {
-        parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('⚙️ Change Rules', 'show_policy')],
-          [Markup.button.callback('📊 Analyze Wallet', 'analyze_watched')],
-          [Markup.button.callback('🔴 Stop Monitoring', 'stop_monitoring')],
+          [Markup.button.callback('🔍 Watch a Wallet', 'mode_watch')],
         ]),
       }
     );
-  } catch (err) {
-    console.error('[bot] Status error:', err.message);
-    console.error('[bot] Status stack:', err.stack);
-    try {
-      await ctx.reply('⚠️ Could not load status. Try again.');
-    } catch (e) {
-      console.error('[bot] Reply also failed:', e.message);
-    }
   }
-});
+
+  const lines = tokens.map((t, i) =>
+    `${i + 1}. *${t.token}* — alert at ${t.threshold}% move\n` +
+    `   Since: ${new Date(t.since).toDateString()}`
+  );
+
+  ctx.reply(
+    `🛡️ *ZenGuard Active*\n\n` +
+    `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n` +
+    `*Watched Tokens:*\n${lines.join('\n\n')}`,
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('➕ Add More Tokens', 'mode_watch')],
+        [Markup.button.callback('📊 Analyze Wallet', 'analyze_watched')],
+        [Markup.button.callback('🔴 Stop All Monitoring', 'stop_all')],
+      ]),
+    }
+  );
+}
 
 // ─── ANALYZE ──────────────────────────────────────────────────────────────────
 
@@ -348,7 +216,7 @@ async function runAnalyze(ctx, address) {
 
 // ─── STOP ─────────────────────────────────────────────────────────────────────
 
-bot.action('stop_monitoring', async (ctx) => {
+bot.action('stop_all', async (ctx) => {
   await ctx.answerCbQuery();
   await handleStop(ctx);
 });
@@ -357,107 +225,129 @@ bot.command('stop', async (ctx) => handleStop(ctx));
 
 async function handleStop(ctx) {
   const address = ctx.session?.watchedWallet ?? await loadWatcher(ctx.from.id);
-  if (address) stopMonitoring(address);
+  if (address) stopMonitoring(ctx.from.id, address);
 
   ctx.session ??= {};
   ctx.session.watchedWallet = null;
+  ctx.session.positions = null;
 
-  await deleteWatcher(ctx.from.id);
+  await Promise.all([
+    deleteWatcher(ctx.from.id),
+    clearWatchedTokens(ctx.from.id),
+  ]);
+
   ctx.reply(
-    '🔴 *Monitoring stopped.*\n\nUse /start anytime to set up a new guard.',
+    '🔴 *All monitoring stopped.*\n\nUse /start anytime to set up new guards.',
     { parse_mode: 'Markdown' }
   );
 }
 
-// ─── WATCH COMMAND (direct) ───────────────────────────────────────────────────
+// ─── WATCH COMMAND ────────────────────────────────────────────────────────────
 
 bot.command('watch', async (ctx) => {
-  const parts = ctx.message.text.split(' ');
-  const address = parts[1];
-
-  if (!address) return ctx.reply('Usage: /watch <wallet_address>');
-
   ctx.session ??= {};
-  ctx.session.watchedWallet = address;
-
-  await saveWatcher(ctx.from.id, address);
-  await saveChatId(ctx.from.id, ctx.chat.id);
-  await scheduleMonitoring(address, ctx);
-
-  ctx.reply(
-    `🛡️ Watching \`${address}\`\n\nUse /policy to set your protection rules.`,
-    { parse_mode: 'Markdown' }
-  );
+  ctx.session.awaitingWatchAddress = true;
+  ctx.reply('Paste the wallet address you want to watch:');
 });
 
-// ─── RESTORE MONITORS ON STARTUP ─────────────────────────────────────────────
+// ─── TEXT INPUT HANDLER ───────────────────────────────────────────────────────
 
-async function restoreMonitors() {
-  try {
-    const keys = await redis.keys('zenguard:watcher:*');
-    const seen = new Set();
+bot.on('text', async (ctx) => {
+  ctx.session ??= {};
 
-    for (const key of keys) {
-      const userId = key.split(':')[2];
-      if (seen.has(userId)) continue;
-      seen.add(userId);
+  if (ctx.message.text.startsWith('/')) return;
 
-      const address = await redis.get(key);
-      const chatId = await loadChatId(userId);
+  // Handle wallet address input
+  if (ctx.session.awaitingWatchAddress) {
+    const address = ctx.message.text.trim();
 
-      if (address && chatId) {
-        const fakeCtx = {
-          from: { id: Number(userId) },
-          chat: { id: Number(chatId) },
-          telegram: bot.telegram,
-        };
-        await scheduleMonitoring(address, fakeCtx);
-        console.log(`[startup] Restored monitor for ${address}`);
-      }
+    const isSolana = address.length >= 32 && address.length <= 44;
+    const isEVM = address.startsWith('0x') && address.length === 42;
+
+    if (!isSolana && !isEVM) {
+      return ctx.reply('⚠️ Invalid address. Paste a valid Solana or EVM wallet address.');
     }
-  } catch (err) {
-    console.error('[startup] Restore failed:', err.message);
+
+    ctx.session.watchedWallet = address;
+    ctx.session.awaitingWatchAddress = false;
+
+    await saveWatcher(ctx.from.id, address);
+    await ctx.reply('🔍 Fetching wallet holdings...');
+
+    try {
+      const positions = await getPositions(address);
+
+      if (!positions.length) {
+        return ctx.reply(
+          '⚠️ No qualifying positions found in this wallet.\n\nTry a different address.'
+        );
+      }
+
+      ctx.session.positions = positions.slice(0, 20).map((p) => ({
+        symbol: p?.attributes?.fungible_info?.symbol ?? '???',
+        mint: p?.attributes?.fungible_info?.implementations?.find(
+          i => i.chain_id === 'solana'
+        )?.address ?? p?.id ?? p?.attributes?.fungible_info?.symbol,
+        value: p?.attributes?.value ?? 0,
+        change: p?.attributes?.changes?.percent_1d ?? 0,
+        price: p?.attributes?.price ?? 0,
+      }));
+
+      await showHoldingsPicker(ctx, address);
+    } catch (err) {
+      console.error('[bot] Holdings fetch failed:', err.message);
+      ctx.reply('⚠️ Could not fetch wallet data. Try again.');
+    }
+    return;
   }
-}
+
+  // Handle custom threshold input
+  if (ctx.session.awaitingThreshold) {
+    const input = parseFloat(ctx.message.text);
+
+    if (isNaN(input) || input <= 0 || input > 100) {
+      return ctx.reply('⚠️ Enter a number between 1 and 100. Example: 15');
+    }
+
+    const { selectedToken, watchedWallet } = ctx.session;
+
+    if (!selectedToken || !watchedWallet) {
+      return ctx.reply('Session expired. Use /start to begin again.');
+    }
+
+    const tokenData = {
+      address: watchedWallet,
+      token: selectedToken.symbol,
+      mint: selectedToken.mint,
+      threshold: input,
+      since: new Date().toISOString(),
+    };
+
+    await addWatchedToken(ctx.from.id, tokenData);
+    await scheduleMonitoring(ctx.from.id, watchedWallet, ctx);
+
+    ctx.session.awaitingThreshold = false;
+    ctx.session.selectedToken = null;
+
+    ctx.reply(
+      `✅ *Guard Active*\n\n` +
+      `Token: *${selectedToken.symbol}*\n` +
+      `Alert threshold: *${input}%* move in 24h\n` +
+      `Wallet: \`${watchedWallet.slice(0, 6)}...${watchedWallet.slice(-4)}\`\n\n` +
+      `ZenGuard is watching. You'll be alerted immediately if triggered.\n\n` +
+      `Use /status to manage your active guards.`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+});
+
+// ─── KEEP ALIVE ───────────────────────────────────────────────────────────────
+
+http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env.PORT || 3000);
 
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
-const PORT = process.env.PORT || 3000;
+bot.launch();
 
-app.get('/', (req, res) => res.send('ZenGuard running.'));
-app.listen(PORT, () => console.log(`[server] Listening on port ${PORT}`));
-
-async function startPolling(retries = 5) {
-  try {
-    bot.launch({ dropPendingUpdates: true });
-    console.log('[launch] ZenGuard running via polling.');
-  } catch (err) {
-    if (err.response?.error_code === 409 && retries > 0) {
-      console.log(`[launch] 409 conflict, retrying in 5s... (${retries} left)`);
-      await new Promise(r => setTimeout(r, 5000));
-      await startPolling(retries - 1);
-    } else {
-      console.error('[launch] Failed to start:', err.message);
-    }
-  }
-}
-
-async function launch() {
-  await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-  console.log('[launch] Webhook cleared.');
-  await restoreMonitors();
-  await new Promise(r => setTimeout(r, 3000));
-  await startPolling();
-}
-
-launch();
-
-process.once('SIGINT', () => {
-  bot.stop('SIGINT');
-  process.exit(0);
-});
-
-process.once('SIGTERM', () => {
-  bot.stop('SIGTERM');
-  process.exit(0);
-});
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));

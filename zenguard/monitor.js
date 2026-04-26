@@ -1,67 +1,86 @@
 import cron from 'node-cron';
-import { getPortfolio, getPositions } from './utils.js';
-import { evaluatePolicy } from './policies.js';
+import { getPositions } from './utils.js';
+import { loadWatchedTokens } from './store.js';
 
 const activeMonitors = new Map();
 const alertCooldowns = new Map();
-const restoringAddresses = new Set();
 
 const COOLDOWN_MS = 60 * 60 * 1000;
 
-function isOnCooldown(address, token) {
-  const key = `${address}:${token}`;
+function isOnCooldown(userId, mint) {
+  const key = `${userId}:${mint}`;
   const last = alertCooldowns.get(key);
   if (!last) return false;
   return Date.now() - last < COOLDOWN_MS;
 }
 
-function setCooldown(address, token) {
-  alertCooldowns.set(`${address}:${token}`, Date.now());
+function setCooldown(userId, mint) {
+  const key = `${userId}:${mint}`;
+  alertCooldowns.set(key, Date.now());
 }
 
-export async function scheduleMonitoring(address, ctx) {
-  if (activeMonitors.has(address)) return;
-  if (restoringAddresses.has(address)) return;
-  restoringAddresses.add(address);
+export async function scheduleMonitoring(userId, address, ctx) {
+  const monitorKey = `${userId}:${address}`;
+  if (activeMonitors.has(monitorKey)) return;
 
-  const userId = ctx.from.id;
-  const chatId = ctx.chat.id;
-  const telegram = ctx.telegram;
-
-  const task = cron.schedule('*/15 * * * *', async () => {
+  const task = cron.schedule('*/5 * * * *', async () => {
     try {
-      const [portfolio, positions] = await Promise.all([
-        getPortfolio(address),
+      const [positions, watchedTokens] = await Promise.all([
         getPositions(address),
+        loadWatchedTokens(userId),
       ]);
 
-      const threat = await evaluatePolicy(userId, portfolio, positions);
+      if (!watchedTokens.length) return;
 
-      if (threat.triggered && !isOnCooldown(address, threat.token)) {
-        setCooldown(address, threat.token);
-
-        await telegram.sendMessage(
-          chatId,
-          `🚨 *ZenGuard Alert*\n\n` +
-          `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n` +
-          `Threat: ${threat.reason}\n` +
-          `Action: Swap triggered → USDC`,
-          { parse_mode: 'Markdown' }
+      for (const watched of watchedTokens) {
+        const position = positions.find(
+          (p) => p?.attributes?.fungible_info?.symbol === watched.token
         );
+
+        if (!position) continue;
+
+        const change = position?.attributes?.changes?.percent_1d ?? 0;
+        const value = position?.attributes?.value ?? 0;
+        const price = position?.attributes?.price ?? 0;
+
+        if (Math.abs(change) >= watched.threshold) {
+          if (isOnCooldown(userId, watched.mint)) continue;
+          setCooldown(userId, watched.mint);
+
+          const direction = change > 0 ? '📈' : '📉';
+
+          await ctx.reply(
+            `🚨 *ZenGuard Alert*\n\n` +
+            `Token: *${watched.token}* ${direction}\n` +
+            `Change: *${change.toFixed(1)}%* in 24h\n` +
+            `Current Price: $${Number(price).toFixed(6)}\n` +
+            `Position Value: $${Number(value).toFixed(2)}\n\n` +
+            `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\``,
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: '📊 View Wallet', callback_data: 'analyze_watched' },
+                  { text: '⚙️ Edit Rules', callback_data: 'show_policy' },
+                ]],
+              },
+            }
+          );
+        }
       }
     } catch (err) {
       console.error(`[monitor] Error checking ${address}:`, err.message);
     }
   });
 
-  activeMonitors.set(address, task);
+  activeMonitors.set(monitorKey, task);
 }
 
-export function stopMonitoring(address) {
-  const task = activeMonitors.get(address);
+export function stopMonitoring(userId, address) {
+  const monitorKey = `${userId}:${address}`;
+  const task = activeMonitors.get(monitorKey);
   if (task) {
     task.stop();
-    activeMonitors.delete(address);
-    restoringAddresses.delete(address);
+    activeMonitors.delete(monitorKey);
   }
 }
