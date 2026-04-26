@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
-const KEY = Buffer.from(process.env.ENCRYPTION_KEY, 'utf8').slice(0, 32);
+const raw = process.env.ENCRYPTION_KEY || '';
+const KEY = Buffer.alloc(32);
+Buffer.from(raw, 'utf8').copy(KEY);
 
 export function encrypt(text) {
   const iv = crypto.randomBytes(16);

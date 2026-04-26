@@ -3,6 +3,8 @@ import http from 'http';
 import { Telegraf, session, Markup } from 'telegraf';
 import { scheduleMonitoring, stopMonitoring } from './monitor.js';
 import { getPortfolio, getPositions } from './utils.js';
+import { importSolanaWallet, importEVMWallet, deriveAddress } from './wallet.js';
+import { swapToUSDCSolana, swapToUSDCEVM } from './swapper.js';
 import {
   saveWatcher,
   loadWatcher,
@@ -11,6 +13,9 @@ import {
   loadWatchedTokens,
   removeWatchedToken,
   clearWatchedTokens,
+  saveEncryptedKey,
+  loadEncryptedKey,
+  deleteEncryptedKey,
 } from './store.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
@@ -24,12 +29,15 @@ bot.start((ctx) => {
   ctx.reply(
     `⚡ *Welcome to ZenGuard*\n\n` +
     `Your autonomous onchain bodyguard — powered by Zerion.\n\n` +
-    `ZenGuard watches specific tokens in any wallet 24/7 and alerts you the moment something goes wrong.\n\n` +
+    `*Two modes:*\n\n` +
+    `🛡️ *Protection Mode* — Import your wallet. ZenGuard auto-swaps to USDC when your rules trigger.\n\n` +
+    `🔍 *Surveillance Mode* — Watch any wallet. Get instant alerts on price moves.\n\n` +
     `*What would you like to do?*`,
     {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
-        [Markup.button.callback('🔍 Watch a Wallet', 'mode_watch')],
+        [Markup.button.callback('🛡️ Protect My Wallet', 'mode_protect')],
+        [Markup.button.callback('🔍 Watch Any Wallet', 'mode_watch')],
         [Markup.button.callback('📊 My Active Guards', 'show_status')],
       ]),
     }
@@ -46,6 +54,51 @@ bot.action('mode_watch', async (ctx) => {
     `🔍 *Watch a Wallet*\n\n` +
     `Paste any Solana or EVM wallet address.\n\n` +
     `ZenGuard will fetch the holdings and let you pick which tokens to guard.`
+  );
+});
+
+
+// ─── WALLET IMPORT ────────────────────────────────────────────────────────────
+
+bot.action('mode_protect', async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.reply(
+    `🛡️ *Import Your Wallet*\n\n` +
+    `ZenGuard will monitor your wallet and auto-swap to USDC when your rules trigger.\n\n` +
+    `Select your wallet type:`,
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🟣 Solana Wallet', 'import_solana')],
+        [Markup.button.callback('🔵 EVM Wallet (ETH/Base/Arbitrum)', 'import_evm')],
+      ]),
+    }
+  );
+});
+
+bot.action('import_solana', async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.session ??= {};
+  ctx.session.awaitingPrivateKey = 'solana';
+  ctx.reply(
+    `🟣 *Solana Wallet Import*\n\n` +
+    `Send your base58 private key.\n\n` +
+    `⚠️ Your key is encrypted with AES-256 immediately upon receipt and never stored in plain text.\n` +
+    `Delete your message after sending for extra safety.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.action('import_evm', async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.session ??= {};
+  ctx.session.awaitingPrivateKey = 'evm';
+  ctx.reply(
+    `🔵 *EVM Wallet Import*\n\n` +
+    `Send your hex private key (starts with 0x).\n\n` +
+    `⚠️ Your key is encrypted with AES-256 immediately upon receipt and never stored in plain text.\n` +
+    `Delete your message after sending for extra safety.`,
+    { parse_mode: 'Markdown' }
   );
 });
 
@@ -256,6 +309,67 @@ bot.on('text', async (ctx) => {
   ctx.session ??= {};
 
   if (ctx.message.text.startsWith('/')) return;
+  // Handle private key import
+  if (ctx.session.awaitingPrivateKey) {
+    const keyType = ctx.session.awaitingPrivateKey;
+    const rawKey = ctx.message.text.trim();
+
+    ctx.session.awaitingPrivateKey = null;
+
+    try {
+      let walletData;
+
+      if (keyType === 'solana') {
+        walletData = importSolanaWallet(rawKey);
+      } else {
+        walletData = importEVMWallet(rawKey);
+      }
+
+      await saveEncryptedKey(ctx.from.id, walletData.encrypted);
+      await saveWatcher(ctx.from.id, walletData.address);
+
+      ctx.session.watchedWallet = walletData.address;
+      ctx.session.walletChain = walletData.chain;
+
+      await ctx.reply(
+        `✅ *Wallet Imported Successfully*\n\n` +
+        `Address: \`${walletData.address.slice(0, 6)}...${walletData.address.slice(-4)}\`\n` +
+        `Chain: ${keyType === 'solana' ? '🟣 Solana' : '🔵 EVM'}\n\n` +
+        `Your key is encrypted and secured.\n\n` +
+        `Now fetching your holdings...`,
+        { parse_mode: 'Markdown' }
+      );
+
+      const positions = await getPositions(walletData.address);
+
+      if (!positions.length) {
+        return ctx.reply('⚠️ No qualifying positions found. Fund your wallet and try again.');
+      }
+
+      ctx.session.positions = positions.slice(0, 20).map((p) => ({
+        symbol: p?.attributes?.fungible_info?.symbol ?? '???',
+        mint: p?.attributes?.fungible_info?.implementations?.find(
+          i => i.chain_id === 'solana'
+        )?.address ?? p?.id ?? p?.attributes?.fungible_info?.symbol,
+        value: p?.attributes?.value ?? 0,
+        change: p?.attributes?.changes?.percent_1d ?? 0,
+        price: p?.attributes?.price ?? 0,
+      }));
+
+      await showHoldingsPicker(ctx, walletData.address);
+
+    } catch (err) {
+      console.error('[bot] Wallet import failed:', err.message);
+      ctx.reply(
+        `⚠️ *Invalid private key.*\n\n` +
+        `Make sure you're sending the correct format:\n` +
+        `• Solana: base58 encoded key\n` +
+        `• EVM: hex key starting with 0x`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+    return;
+  }
 
   // Handle wallet address input
   if (ctx.session.awaitingWatchAddress) {
@@ -343,8 +457,7 @@ bot.on('text', async (ctx) => {
 
 // ─── KEEP ALIVE ───────────────────────────────────────────────────────────────
 
-http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env.PORT || 3000);
-
+http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env.PORT || 0);
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
 bot.launch();
