@@ -37,6 +37,34 @@ export function importSolanaWallet(privateKeyInput) {
   }
 }
 
+export function generateSolanaWallet() {
+  const keypair = Keypair.generate();
+  const privateKey = bs58.encode(keypair.secretKey);
+  const encrypted = encrypt(privateKey);
+
+  return {
+    address: keypair.publicKey.toString(),
+    privateKey, // shown to user once then discarded
+    encrypted,
+    chain: 'solana',
+  };
+}
+
+
+export function generateEVMWallet() {
+  const wallet = ethers.Wallet.createRandom();
+  const encrypted = encrypt(wallet.privateKey);
+
+  return {
+    address: wallet.address,
+    privateKey: wallet.privateKey,
+    mnemonic: wallet.mnemonic?.phrase ?? null,
+    encrypted,
+    chain: 'evm',
+  };
+}
+
+
 export function getSolanaKeypair(encryptedKey) {
   const raw = decrypt(encryptedKey);
   const secretKey = bs58.decode(raw);

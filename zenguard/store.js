@@ -53,23 +53,78 @@ export async function deleteWatcher(userId) {
   await redis.del(`zenguard:watcher:${userId}`);
 }
 
-// ─── ENCRYPTED PRIVATE KEY ────────────────────────────────────────────────────
+// ─── ENCRYPTED PRIVATE KEYS — PER CHAIN ──────────────────────────────────────
 
-export async function saveEncryptedKey(userId, encryptedKey) {
-  await redis.set(`zenguard:key:${userId}`, encryptedKey);
+export async function saveEncryptedKey(userId, encryptedKey, chain = 'solana') {
+  await redis.set(`zenguard:key:${chain}:${userId}`, encryptedKey);
 }
 
-export async function loadEncryptedKey(userId) {
-  const data = await redis.get(`zenguard:key:${userId}`);
+export async function loadEncryptedKey(userId, chain = 'solana') {
+  const data = await redis.get(`zenguard:key:${chain}:${userId}`);
   if (!data) return null;
   return typeof data === 'string' ? data : String(data);
 }
 
-export async function deleteEncryptedKey(userId) {
-  await redis.del(`zenguard:key:${userId}`);
+export async function deleteEncryptedKey(userId, chain = 'solana') {
+  await redis.del(`zenguard:key:${chain}:${userId}`);
 }
 
-// ─── LEGACY POLICY (kept for compatibility) ───────────────────────────────────
+export async function loadAllKeys(userId) {
+  const [solana, evm] = await Promise.all([
+    loadEncryptedKey(userId, 'solana'),
+    loadEncryptedKey(userId, 'evm'),
+  ]);
+  return { solana, evm };
+}
+
+export async function saveWalletAddress(userId, address, chain = 'solana') {
+  await redis.set(`zenguard:address:${chain}:${userId}`, address);
+}
+
+export async function loadWalletAddress(userId, chain = 'solana') {
+  const data = await redis.get(`zenguard:address:${chain}:${userId}`);
+  if (!data) return null;
+  return typeof data === 'string' ? data : String(data);
+}
+
+export async function loadAllAddresses(userId) {
+  const [solana, evm] = await Promise.all([
+    loadWalletAddress(userId, 'solana'),
+    loadWalletAddress(userId, 'evm'),
+  ]);
+  return { solana, evm };
+}
+
+// ─── ACTIVE TRADING POSITIONS ─────────────────────────────────────────────────
+
+export async function savePosition(userId, position) {
+  const positions = await loadPositions(userId);
+  const existing = positions.findIndex(p => p.mint === position.mint);
+  if (existing >= 0) {
+    positions[existing] = position;
+  } else {
+    positions.push(position);
+  }
+  await redis.set(`zenguard:positions:${userId}`, positions);
+}
+
+export async function loadPositions(userId) {
+  const data = await redis.get(`zenguard:positions:${userId}`);
+  if (!data) return [];
+  return Array.isArray(data) ? data : JSON.parse(data);
+}
+
+export async function removePosition(userId, mint) {
+  const positions = await loadPositions(userId);
+  const updated = positions.filter(p => p.mint !== mint);
+  await redis.set(`zenguard:positions:${userId}`, updated);
+}
+
+export async function clearPositions(userId) {
+  await redis.del(`zenguard:positions:${userId}`);
+}
+
+// ─── LEGACY POLICY ────────────────────────────────────────────────────────────
 
 export async function savePolicy(userId, data) {
   await redis.set(`zenguard:policy:${userId}`, data);
