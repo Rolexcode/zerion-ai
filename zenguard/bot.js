@@ -265,8 +265,7 @@ bot.action('mode_trade', async (ctx) => {
     `⚡ *Quick Trade*\n\n${lines.join('\n')}\n\n` +
     `Just paste any contract address to buy.\n\n` +
     `Or use commands:\n` +
-    `*/buy <CA>* — buy a token\n` +
-    `*/sell* — manage open positions\n` +
+`Just paste any contract address to buy instantly.\n` +    `*/sell* — manage open positions\n` +
     `*/positions* — view ROI`,
     {
       parse_mode: 'Markdown',

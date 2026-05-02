@@ -1,9 +1,9 @@
 /**
  * ZenGuard swap execution layer.
  *
- * Uses the forked Zerion CLI's getSwapQuote for routing and quote resolution,
- * then signs and broadcasts using the user's decrypted keypair.
- * Token info sourced from DexScreener for accurate real-time market data.
+ * Quote routing: forked Zerion CLI's getSwapQuote (cli/lib/trading/swap.js)
+ * Token data: DexScreener API for accurate real-time market data
+ * Signing: user's decrypted keypair (AES-256 encrypted in Redis)
  */
 
 import axios from 'axios';
@@ -35,17 +35,6 @@ const NATIVE_CURRENCY = {
   'binance-smart-chain': 'BNB',
 };
 
-// DexScreener chain slugs mapped to our chain IDs
-const DEXSCREENER_CHAIN_MAP = {
-  solana: 'solana',
-  ethereum: 'ethereum',
-  base: 'base',
-  arbitrum: 'arbitrum',
-  optimism: 'optimism',
-  polygon: 'polygon',
-  'binance-smart-chain': 'bsc',
-};
-
 const zerion = axios.create({
   baseURL: 'https://api.zerion.io/v1',
   headers: {
@@ -54,118 +43,135 @@ const zerion = axios.create({
   },
 });
 
-// ─── DETECT CHAIN FROM ADDRESS ────────────────────────────────────────────────
+// ─── ADDRESS VALIDATION ───────────────────────────────────────────────────────
+
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const EVM_ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
+
+export function isContractAddress(text) {
+  if (!text || typeof text !== 'string') return false;
+  const t = text.trim();
+  return SOLANA_ADDRESS_REGEX.test(t) || EVM_ADDRESS_REGEX.test(t);
+}
 
 export function detectChain(address) {
   if (!address) return null;
-  // Solana addresses are base58, 32-44 chars, no 0x prefix
-  if (!address.startsWith('0x') && address.length >= 32 && address.length <= 44) {
-    return 'solana';
-  }
-  // EVM addresses start with 0x and are 42 chars
-  if (address.startsWith('0x') && address.length === 42) {
-    return 'evm'; // generic EVM — DexScreener will find the exact chain
-  }
+  if (EVM_ADDRESS_REGEX.test(address.trim())) return 'evm';
+  if (SOLANA_ADDRESS_REGEX.test(address.trim())) return 'solana';
   return null;
 }
 
-export function isContractAddress(text) {
-  text = text.trim();
-  // Solana CA
-  if (!text.startsWith('0x') && text.length >= 32 && text.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(text)) {
-    return true;
-  }
-  // EVM CA
-  if (text.startsWith('0x') && text.length === 42) {
-    return true;
-  }
-  return false;
+function validateAddress(address, type = 'any') {
+  if (!address || typeof address !== 'string') throw new Error('Invalid address.');
+  const a = address.trim();
+  if (type === 'solana' && !SOLANA_ADDRESS_REGEX.test(a)) throw new Error('Invalid Solana address.');
+  if (type === 'evm' && !EVM_ADDRESS_REGEX.test(a)) throw new Error('Invalid EVM address.');
+  if (type === 'any' && !SOLANA_ADDRESS_REGEX.test(a) && !EVM_ADDRESS_REGEX.test(a)) throw new Error('Invalid address format.');
+  return a;
 }
 
 // ─── GET TOKEN INFO — DEXSCREENER ─────────────────────────────────────────────
 
-export async function getTokenInfo(addressOrQuery) {
-  try {
-    const address = addressOrQuery.trim();
+export async function getTokenInfo(addressInput) {
+  const address = validateAddress(addressInput);
 
-    // Search DexScreener by token address
-    const { data } = await axios.get(
-      `https://api.dexscreener.com/latest/dex/tokens/${address}`
-    );
+  const { data } = await axios.get(
+    `https://api.dexscreener.com/latest/dex/tokens/${address}`,
+    { timeout: 10000 }
+  );
 
-    const pairs = data?.pairs;
-    if (!pairs || pairs.length === 0) {
-      throw new Error('Token not found on DexScreener.');
-    }
+  const pairs = data?.pairs;
+  if (!pairs || pairs.length === 0) throw new Error('Token not found on DexScreener.');
 
-    // Sort by liquidity to get the most liquid pair
-    const sorted = pairs.sort((a, b) =>
-      (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0)
-    );
+  const sorted = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
+  const best = sorted[0];
 
-    const best = sorted[0];
-    const chainId = best.chainId; // e.g. 'solana', 'ethereum', 'bsc'
+  const chainMap = {
+    solana: 'solana',
+    ethereum: 'ethereum',
+    base: 'base',
+    arbitrum: 'arbitrum',
+    optimism: 'optimism',
+    polygon: 'polygon',
+    bsc: 'binance-smart-chain',
+  };
 
-    // Map DexScreener chain to our chain ID
-    const chainMap = {
-      solana: 'solana',
-      ethereum: 'ethereum',
-      base: 'base',
-      arbitrum: 'arbitrum',
-      optimism: 'optimism',
-      polygon: 'polygon',
-      bsc: 'binance-smart-chain',
-    };
+  const ourChain = chainMap[best.chainId] ?? best.chainId;
+  const nativeCurrency = NATIVE_CURRENCY[ourChain] ?? 'ETH';
 
-    const ourChain = chainMap[chainId] ?? chainId;
-    const nativeCurrency = NATIVE_CURRENCY[ourChain] ?? 'ETH';
-
-    return {
-      name: best.baseToken?.name ?? 'Unknown',
-      symbol: best.baseToken?.symbol ?? '???',
-      address: best.baseToken?.address ?? address,
-      price: parseFloat(best.priceUsd ?? 0),
-      change24h: best.priceChange?.h24 ?? 0,
-      volume24h: best.volume?.h24 ?? 0,
-      liquidity: best.liquidity?.usd ?? 0,
-      marketCap: best.marketCap ?? 0,
-      verified: best.boosts !== undefined || false,
-      chain: ourChain,
-      dexChain: chainId,
-      nativeCurrency,
-      pairAddress: best.pairAddress,
-      dex: best.dexId,
-    };
-  } catch (err) {
-    console.error('[swapper] Token info failed:', err.message);
-    throw new Error('Token not found. Check the contract address.');
-  }
+  return {
+    name: best.baseToken?.name ?? 'Unknown',
+    symbol: best.baseToken?.symbol ?? '???',
+    address: validateAddress(best.baseToken?.address ?? address),
+    price: parseFloat(best.priceUsd ?? 0),
+    change24h: best.priceChange?.h24 ?? 0,
+    volume24h: best.volume?.h24 ?? 0,
+    liquidity: best.liquidity?.usd ?? 0,
+    marketCap: best.marketCap ?? 0,
+    verified: !!best.boosts,
+    chain: ourChain,
+    dexChain: best.chainId,
+    nativeCurrency,
+    pairAddress: best.pairAddress,
+    dex: best.dexId,
+  };
 }
 
-// ─── SOLANA SWAP ──────────────────────────────────────────────────────────────
+// ─── SOLANA SWAP — via Zerion CLI getSwapQuote ────────────────────────────────
 
 export async function swapToUSDCSolana(encryptedKey, tokenMint, amount) {
+  validateAddress(tokenMint, 'solana');
+  if (!amount || isNaN(amount) || amount <= 0) throw new Error('Invalid swap amount.');
+
   const keypair = getSolanaKeypair(encryptedKey);
   const walletAddress = keypair.publicKey.toString();
-
   const USDC_SOLANA = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
-  const { data: quoteData } = await zerion.get('/swap/quote', {
-    params: {
-      from_chain: 'solana',
-      to_chain: 'solana',
-      from_token: tokenMint,
-      to_token: USDC_SOLANA,
-      amount,
-      slippage: 0.02,
-      from_address: walletAddress,
-    },
-  });
+  // Route through Zerion CLI's getSwapQuote
+let getSwapQuote;
+  try {
+    const swapModule = await import('../cli/lib/trading/swap.js');
+    getSwapQuote = swapModule.getSwapQuote;
+    console.log('[swapper] Using Zerion CLI getSwapQuote — Solana');
+  } catch (err) {
+    console.log('[swapper] CLI import failed, using direct API — Solana:', err.message);
+    getSwapQuote = null;
+  }
+  let txData;
 
-  const txData = quoteData?.data?.attributes?.transaction;
-  if (!txData) throw new Error('No swap transaction returned from Zerion.');
+  if (getSwapQuote) {
+    // Use CLI's getSwapQuote — proper routing through Zerion
+    const quote = await getSwapQuote({
+      fromToken: tokenMint,
+      toToken: USDC_SOLANA,
+      amount: String(amount),
+      fromChain: 'solana',
+      toChain: 'solana',
+      walletAddress,
+    });
 
-  const txBuffer = Buffer.from(txData.data, 'base64');
+    if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
+    txData = quote.transaction.data;
+  } else {
+    // Direct Zerion API fallback
+    const { data: quoteData } = await zerion.get('/swap/quote', {
+      params: {
+        from_chain: 'solana',
+        to_chain: 'solana',
+        from_token: tokenMint,
+        to_token: USDC_SOLANA,
+        amount,
+        slippage: 0.02,
+        from_address: walletAddress,
+      },
+    });
+
+    const tx = quoteData?.data?.attributes?.transaction;
+    if (!tx) throw new Error('No swap transaction returned from Zerion.');
+    txData = tx.data;
+  }
+
+  const txBuffer = Buffer.from(txData, 'base64');
 
   let signed;
   try {
@@ -187,34 +193,72 @@ export async function swapToUSDCSolana(encryptedKey, tokenMint, amount) {
   return txHash;
 }
 
-// ─── EVM SWAP ─────────────────────────────────────────────────────────────────
+// ─── EVM SWAP — via Zerion CLI getSwapQuote ───────────────────────────────────
 
 export async function swapToUSDCEVM(encryptedKey, chain, tokenAddress, amount) {
-  const wallet = getEVMWallet(encryptedKey);
-  const provider = new ethers.JsonRpcProvider(RPC_URLS[chain] || RPC_URLS.ethereum);
-  const connectedWallet = wallet.connect(provider);
+  validateAddress(tokenAddress, 'evm');
+  if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) throw new Error('Invalid swap amount.');
+  if (!RPC_URLS[chain]) throw new Error(`Unsupported chain: ${chain}`);
 
+  const wallet = getEVMWallet(encryptedKey);
+  const provider = new ethers.JsonRpcProvider(RPC_URLS[chain]);
+  const connectedWallet = wallet.connect(provider);
   const USDC_EVM = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
 
-  const { data: quoteData } = await zerion.get('/swap/quote', {
-    params: {
-      from_chain: chain,
-      to_chain: chain,
-      from_token: tokenAddress,
-      to_token: USDC_EVM,
-      amount,
-      slippage: 0.02,
-      from_address: wallet.address,
-    },
-  });
+let getSwapQuote;
+  try {
+    const swapModule = await import('../cli/lib/trading/swap.js');
+    getSwapQuote = swapModule.getSwapQuote;
+    console.log('[swapper] Using Zerion CLI getSwapQuote — EVM');
+  } catch (err) {
+    console.log('[swapper] CLI import failed, using direct API — EVM:', err.message);
+    getSwapQuote = null;
+  }
 
-  const txData = quoteData?.data?.attributes?.transaction;
-  if (!txData) throw new Error('No swap transaction returned from Zerion.');
+  let txData;
+  let needsApproval = false;
+  let spender = null;
 
-  if (quoteData?.data?.attributes?.preconditions?.enough_allowance === false && txData.spender) {
+  if (getSwapQuote) {
+    const quote = await getSwapQuote({
+      fromToken: tokenAddress,
+      toToken: USDC_EVM,
+      amount: String(amount),
+      fromChain: chain,
+      toChain: chain,
+      walletAddress: wallet.address,
+    });
+
+    if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
+    txData = quote.transaction;
+    needsApproval = quote.preconditions?.enough_allowance === false;
+    spender = quote.spender;
+  } else {
+    const { data: quoteData } = await zerion.get('/swap/quote', {
+      params: {
+        from_chain: chain,
+        to_chain: chain,
+        from_token: tokenAddress,
+        to_token: USDC_EVM,
+        amount,
+        slippage: 0.02,
+        from_address: wallet.address,
+      },
+    });
+
+    const attrs = quoteData?.data?.attributes;
+    if (!attrs?.transaction) throw new Error('No swap transaction returned from Zerion.');
+    txData = attrs.transaction;
+    needsApproval = attrs.preconditions?.enough_allowance === false;
+    spender = attrs.asset_spender;
+  }
+
+  // Handle ERC-20 approval if needed
+  if (needsApproval && spender) {
+    validateAddress(spender, 'evm');
     const erc20Abi = ['function approve(address spender, uint256 amount) returns (bool)'];
     const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, connectedWallet);
-    const approvalTx = await tokenContract.approve(txData.spender, ethers.MaxUint256);
+    const approvalTx = await tokenContract.approve(spender, ethers.MaxUint256);
     await approvalTx.wait();
   }
 
