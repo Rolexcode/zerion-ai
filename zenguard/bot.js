@@ -716,6 +716,31 @@ bot.on('text', async (ctx) => {
     return;
   }
 
+
+  bot.command('reset', async (ctx) => {
+  const { Redis } = await import('@upstash/redis');
+  const r = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+  });
+  
+  const userId = ctx.from.id;
+  const keys = [
+    `zenguard:tokens:${userId}`,
+    `zenguard:watcher:${userId}`,
+    `zenguard:key:solana:${userId}`,
+    `zenguard:key:evm:${userId}`,
+    `zenguard:address:solana:${userId}`,
+    `zenguard:address:evm:${userId}`,
+    `zenguard:positions:${userId}`,
+    `zenguard:policy:${userId}`,
+  ];
+
+  await Promise.all(keys.map(k => r.del(k)));
+  ctx.session = {};
+  ctx.reply('✅ Account reset. Use /start to begin fresh.');
+});
+
   // Handle private key import
   if (ctx.session.awaitingPrivateKey) {
     const keyType = ctx.session.awaitingPrivateKey;
@@ -869,6 +894,8 @@ bot.on('text', async (ctx) => {
     );
   }
 });
+
+
 
 // ─── KEEP ALIVE ───────────────────────────────────────────────────────────────
 
