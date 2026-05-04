@@ -1,11 +1,12 @@
 import cron from 'node-cron';
 import { getPositions } from './utils.js';
-import { loadWatchedTokens, loadEncryptedKey } from './store.js';
+import { loadWatchedTokens, loadEncryptedKey, loadWalletAddress } from './store.js';
 import { swapToUSDCSolana, swapToUSDCEVM } from './swapper.js';
 
 const activeMonitors = new Map();
 const alertCooldowns = new Map();
 
+// 1 hour cooldown per token per user — prevents spam and rate limit hammering
 const COOLDOWN_MS = 60 * 60 * 1000;
 
 function isOnCooldown(userId, mint) {
@@ -16,8 +17,7 @@ function isOnCooldown(userId, mint) {
 }
 
 function setCooldown(userId, mint) {
-  const key = `${userId}:${mint}`;
-  alertCooldowns.set(key, Date.now());
+  alertCooldowns.set(`${userId}:${mint}`, Date.now());
 }
 
 export async function scheduleMonitoring(userId, address, ctx) {
@@ -26,17 +26,25 @@ export async function scheduleMonitoring(userId, address, ctx) {
 
   const task = cron.schedule('*/5 * * * *', async () => {
     try {
-      const [positions, watchedTokens, encryptedKey] = await Promise.all([
+      const [positions, watchedTokens] = await Promise.all([
         getPositions(address),
         loadWatchedTokens(userId),
-        loadEncryptedKey(userId),
       ]);
 
       if (!watchedTokens.length) return;
 
+      // Determine if this is the user's OWN wallet
+      const [ownSolana, ownEVM] = await Promise.all([
+        loadWalletAddress(userId, 'solana'),
+        loadWalletAddress(userId, 'evm'),
+      ]);
+      const isOwnWallet = address === ownSolana || address === ownEVM;
+
       for (const watched of watchedTokens) {
+        if (watched.address !== address) continue;
+
         const position = positions.find(
-          (p) => p?.attributes?.fungible_info?.symbol === watched.token
+          p => p?.attributes?.fungible_info?.symbol === watched.token
         );
 
         if (!position) continue;
@@ -45,81 +53,96 @@ export async function scheduleMonitoring(userId, address, ctx) {
         const value = position?.attributes?.value ?? 0;
         const price = position?.attributes?.price ?? 0;
         const quantity = position?.attributes?.quantity?.float ?? 0;
+        const chain = position?.relationships?.chain?.data?.id ?? 'solana';
 
-        if (Math.abs(change) >= watched.threshold) {
-          if (isOnCooldown(userId, watched.mint)) continue;
-          setCooldown(userId, watched.mint);
+        const dropTriggered = change <= -(watched.threshold);
+        const pumpTriggered = watched.takeProfit && change >= watched.takeProfit;
 
-          const direction = change > 0 ? '📈' : '📉';
+        if (!dropTriggered && !pumpTriggered) continue;
+        if (isOnCooldown(userId, watched.mint)) continue;
 
-          if (encryptedKey) {
-            // Protection mode — execute real swap
-            try {
-              await ctx.reply(
-                `🚨 *ZenGuard — Auto-Swap Triggered*\n\n` +
-                `Token: *${watched.token}* ${direction}\n` +
-                `Change: *${change.toFixed(1)}%* in 24h\n` +
-                `Executing protective swap to USDC...`,
-                { parse_mode: 'Markdown' }
-              );
+        setCooldown(userId, watched.mint);
 
-              const chain = watched.chain ?? 'solana';
-              let txHash;
+        const direction = change > 0 ? '📈' : '📉';
+        const reason = dropTriggered
+          ? `dropped ${Math.abs(change).toFixed(1)}%`
+          : `pumped ${change.toFixed(1)}%`;
 
-              if (chain === 'solana') {
-                txHash = await swapToUSDCSolana(
-                  encryptedKey,
-                  watched.mint,
-                  quantity
-                );
-              } else {
-                txHash = await swapToUSDCEVM(
-                  encryptedKey,
-                  chain,
-                  watched.mint,
-                  quantity
-                );
-              }
-
-              await ctx.reply(
-                `✅ *Swap Executed*\n\n` +
-                `${watched.token} → USDC\n` +
-                `Tx: \`${txHash}\`\n\n` +
-                `Your funds are protected.`,
-                { parse_mode: 'Markdown' }
-              );
-
-            } catch (err) {
-              console.error('[monitor] Swap failed:', err.message);
-              await ctx.reply(
-                `⚠️ *Auto-swap failed*\n\n` +
-                `${watched.token} moved ${change.toFixed(1)}% but swap could not execute.\n` +
-                `Reason: ${err.message}\n\n` +
-                `Check your position manually.`,
-                { parse_mode: 'Markdown' }
-              );
+        // ─── SURVEILLANCE MODE — alert only ──────────────────────────────────
+        if (!isOwnWallet || !watched.autoSell) {
+          await ctx.reply(
+            `🚨 *ZenGuard Alert*\n\n` +
+            `Token: *${watched.token}* ${direction}\n` +
+            `Change: *${change.toFixed(1)}%* in 24h\n` +
+            `Price: $${Number(price).toFixed(6)}\n` +
+            `Value: $${Number(value).toFixed(2)}\n\n` +
+            `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\``,
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: '📊 View Wallet', callback_data: 'analyze_watched' },
+                  { text: '📋 Dashboard', callback_data: 'show_status' },
+                ]],
+              },
             }
+          );
+          continue;
+        }
 
+        // ─── PROTECTION MODE — auto-swap user's own wallet ────────────────────
+        const chainKey = chain === 'solana' ? 'solana' : 'evm';
+        const encryptedKey = await loadEncryptedKey(userId, chainKey);
+
+        if (!encryptedKey) {
+          await ctx.reply(
+            `🚨 *ZenGuard Alert*\n\n` +
+            `*${watched.token}* ${reason} — no wallet key found to execute swap.\n\n` +
+            `Check your wallet connection in My Wallets.`,
+            { parse_mode: 'Markdown' }
+          );
+          continue;
+        }
+
+        // Calculate swap amount based on user's chosen percentage
+        const swapPct = watched.swapPercent ?? 100;
+        const swapAmount = quantity * (swapPct / 100);
+
+        await ctx.reply(
+          `🚨 *ZenGuard — Auto-Swap Triggered*\n\n` +
+          `Token: *${watched.token}* ${direction}\n` +
+          `Change: *${change.toFixed(1)}%* in 24h\n` +
+          `Swapping *${swapPct}%* of position → USDC...`,
+          { parse_mode: 'Markdown' }
+        );
+
+        try {
+          let txHash;
+          if (chain === 'solana') {
+            txHash = await swapToUSDCSolana(encryptedKey, watched.mint, swapAmount);
           } else {
-            // Surveillance mode — alert only
-            await ctx.reply(
-              `🚨 *ZenGuard Alert*\n\n` +
-              `Token: *${watched.token}* ${direction}\n` +
-              `Change: *${change.toFixed(1)}%* in 24h\n` +
-              `Current Price: $${Number(price).toFixed(6)}\n` +
-              `Position Value: $${Number(value).toFixed(2)}\n\n` +
-              `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\``,
-              {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                  inline_keyboard: [[
-                    { text: '📊 View Wallet', callback_data: 'analyze_watched' },
-                    { text: '⚙️ Edit Rules', callback_data: 'show_status' },
-                  ]],
-                },
-              }
-            );
+            txHash = await swapToUSDCEVM(encryptedKey, chain, watched.mint, swapAmount);
           }
+
+          await ctx.reply(
+            `✅ *Swap Executed*\n\n` +
+            `${swapPct}% of ${watched.token} → USDC\n` +
+            `Tx: \`${txHash}\``,
+            { parse_mode: 'Markdown' }
+          );
+        } catch (err) {
+          console.error(`[monitor] Swap failed:`, err.message);
+
+          // Extend cooldown on swap failure to avoid hammering the API
+          alertCooldowns.set(`${userId}:${watched.mint}`, Date.now());
+
+          await ctx.reply(
+            `⚠️ *Auto-swap failed*\n\n` +
+            `*${watched.token}* ${reason} but swap could not execute.\n` +
+            `Reason: ${err.message}\n\n` +
+            `Check your position manually.`,
+            { parse_mode: 'Markdown' }
+          );
         }
       }
     } catch (err) {
