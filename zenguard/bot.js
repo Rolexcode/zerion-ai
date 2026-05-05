@@ -26,7 +26,6 @@ import {
 } from './store.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-
 bot.use(session());
 
 // ─── START ────────────────────────────────────────────────────────────────────
@@ -52,24 +51,39 @@ bot.start((ctx) => {
   );
 });
 
+// ─── RESET (testing only — remove before final submission) ────────────────────
+
+bot.command('reset', async (ctx) => {
+  const { Redis } = await import('@upstash/redis');
+  const r = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+  });
+  const userId = ctx.from.id;
+  const keys = [
+    `zenguard:tokens:${userId}`,
+    `zenguard:watcher:${userId}`,
+    `zenguard:key:solana:${userId}`,
+    `zenguard:key:evm:${userId}`,
+    `zenguard:address:solana:${userId}`,
+    `zenguard:address:evm:${userId}`,
+    `zenguard:positions:${userId}`,
+    `zenguard:policy:${userId}`,
+  ];
+  await Promise.all(keys.map(k => r.del(k)));
+  ctx.session = {};
+  ctx.reply('✅ Account reset. Use /start to begin fresh.');
+});
+
 // ─── MY WALLETS ───────────────────────────────────────────────────────────────
 
 bot.action('my_wallets', async (ctx) => {
   await ctx.answerCbQuery();
   const { solana, evm } = await loadAllAddresses(ctx.from.id);
-
-  const solanaStatus = solana
-    ? `✅ \`${solana.slice(0, 6)}...${solana.slice(-4)}\``
-    : '❌ Not connected';
-  const evmStatus = evm
-    ? `✅ \`${evm.slice(0, 6)}...${evm.slice(-4)}\``
-    : '❌ Not connected';
-
+  const solanaStatus = solana ? `✅ \`${solana.slice(0, 6)}...${solana.slice(-4)}\`` : '❌ Not connected';
+  const evmStatus = evm ? `✅ \`${evm.slice(0, 6)}...${evm.slice(-4)}\`` : '❌ Not connected';
   ctx.reply(
-    `🔐 *My Wallets*\n\n` +
-    `🟣 *Solana:* ${solanaStatus}\n` +
-    `🔵 *EVM (ETH/Base/BSC/Arbitrum):* ${evmStatus}\n\n` +
-    `Connect wallets to enable auto-swap protection and trading.`,
+    `🔐 *My Wallets*\n\n🟣 *Solana:* ${solanaStatus}\n🔵 *EVM (ETH/Base/BSC/Arbitrum):* ${evmStatus}\n\nConnect wallets to enable auto-swap protection and trading.`,
     {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
@@ -83,7 +97,6 @@ bot.action('my_wallets', async (ctx) => {
 bot.action('manage_solana', async (ctx) => {
   await ctx.answerCbQuery();
   const address = await loadWalletAddress(ctx.from.id, 'solana');
-
   if (address) {
     ctx.reply(
       `🟣 *Solana Wallet*\n\nConnected: \`${address}\`\n\nWhat would you like to do?`,
@@ -97,23 +110,19 @@ bot.action('manage_solana', async (ctx) => {
       }
     );
   } else {
-    ctx.reply(
-      `🟣 *Solana Wallet*\n\nNo Solana wallet connected yet.`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📥 Import Existing', 'import_solana')],
-          [Markup.button.callback('✨ Generate New', 'gen_solana')],
-        ]),
-      }
-    );
+    ctx.reply(`🟣 *Solana Wallet*\n\nNo Solana wallet connected yet.`, {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('📥 Import Existing', 'import_solana')],
+        [Markup.button.callback('✨ Generate New', 'gen_solana')],
+      ]),
+    });
   }
 });
 
 bot.action('manage_evm', async (ctx) => {
   await ctx.answerCbQuery();
   const address = await loadWalletAddress(ctx.from.id, 'evm');
-
   if (address) {
     ctx.reply(
       `🔵 *EVM Wallet*\n\nConnected: \`${address}\`\n\nWhat would you like to do?`,
@@ -127,16 +136,13 @@ bot.action('manage_evm', async (ctx) => {
       }
     );
   } else {
-    ctx.reply(
-      `🔵 *EVM Wallet*\n\nNo EVM wallet connected yet.`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📥 Import Existing', 'import_evm')],
-          [Markup.button.callback('✨ Generate New', 'gen_evm')],
-        ]),
-      }
-    );
+    ctx.reply(`🔵 *EVM Wallet*\n\nNo EVM wallet connected yet.`, {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('📥 Import Existing', 'import_evm')],
+        [Markup.button.callback('✨ Generate New', 'gen_evm')],
+      ]),
+    });
   }
 });
 
@@ -158,6 +164,7 @@ bot.action('disconnect_evm', async (ctx) => {
   ctx.reply('🔵 EVM wallet disconnected.');
 });
 
+// FIX: analyze_solana and analyze_evm now use own wallet address directly
 bot.action('analyze_solana', async (ctx) => {
   await ctx.answerCbQuery();
   const address = await loadWalletAddress(ctx.from.id, 'solana');
@@ -238,41 +245,24 @@ bot.action('mode_watch', async (ctx) => {
   await ctx.answerCbQuery();
   ctx.session ??= {};
   ctx.session.awaitingWatchAddress = true;
-  ctx.reply(
-    `👁 *Spy on a Wallet*\n\nPaste any Solana or EVM wallet address.\n\nZenGuard fetches holdings and lets you pick which tokens to guard.`
-  );
+  ctx.reply(`👁 *Spy on a Wallet*\n\nPaste any Solana or EVM wallet address.\n\nZenGuard fetches holdings and lets you pick which tokens to guard.`);
 });
 
 bot.action('mode_trade', async (ctx) => {
   await ctx.answerCbQuery();
   const { solana, evm } = await loadAllKeys(ctx.from.id);
-
   if (!solana && !evm) {
     return ctx.reply(
       `⚠️ *No wallets connected.*\n\nConnect at least one wallet to start trading.`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([[Markup.button.callback('🔐 My Wallets', 'my_wallets')]]),
-      }
+      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('🔐 My Wallets', 'my_wallets')]]) }
     );
   }
-
   const lines = [];
   if (solana) lines.push('🟣 Solana: connected');
   if (evm) lines.push('🔵 EVM: connected');
-
   ctx.reply(
-    `⚡ *Quick Trade*\n\n${lines.join('\n')}\n\n` +
-    `Just paste any contract address to buy.\n\n` +
-    `Or use commands:\n` +
-`Just paste any contract address to buy instantly.\n` +    `*/sell* — manage open positions\n` +
-    `*/positions* — view ROI`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('📊 View Positions', 'view_positions')],
-      ]),
-    }
+    `⚡ *Quick Trade*\n\n${lines.join('\n')}\n\nJust paste any contract address to buy.\n\n*/sell* — manage open positions\n*/positions* — view ROI`,
+    { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('📊 View Positions', 'view_positions')]]) }
   );
 });
 
@@ -281,26 +271,16 @@ bot.action('mode_trade', async (ctx) => {
 async function showHoldingsPicker(ctx, address) {
   const positions = ctx.session.positions ?? [];
   if (!positions.length) {
-    return ctx.reply(
-      `⚠️ *No qualifying positions found.*\n\nThis wallet may be empty or hold untracked tokens.`,
-      { parse_mode: 'Markdown' }
-    );
+    return ctx.reply(`⚠️ *No qualifying positions found.*\n\nThis wallet may be empty or hold untracked tokens.`, { parse_mode: 'Markdown' });
   }
-
   const buttons = positions.map((p) => {
     const arrow = p.change >= 0 ? '📈' : '📉';
-    const label = `${arrow} ${p.symbol} — $${Number(p.value).toFixed(2)} (${Number(p.change).toFixed(1)}%)`;
-    return [Markup.button.callback(label, `pick_token_${p.symbol}`)];
+    return [Markup.button.callback(`${arrow} ${p.symbol} — $${Number(p.value).toFixed(2)} (${Number(p.change).toFixed(1)}%)`, `pick_token_${p.symbol}`)];
   });
-
   buttons.push([Markup.button.callback('✅ Done selecting', 'done_picking')]);
-
   ctx.reply(
     `💼 *Wallet Holdings*\n\n\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\nTap a token to set your alert threshold:`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard(buttons),
-    }
+    { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
   );
 }
 
@@ -315,7 +295,7 @@ bot.action(/pick_token_(.+)/, async (ctx) => {
   ctx.session.selectedToken = position;
   ctx.session.awaitingThreshold = true;
   ctx.reply(
-    `⚙️ *Set Alert for ${symbol}*\n\nPrice: $${Number(position.price).toFixed(6)}\n24h: ${Number(position.change).toFixed(1)}%\nValue: $${Number(position.value).toFixed(2)}\n\nEnter the % drop that should alert you.\nExample: *20* = alert if drops 20%`,
+    `⚙️ *Set Alert for ${symbol}*\n\nPrice: $${Number(position.price).toFixed(6)}\n24h: ${Number(position.change).toFixed(1)}%\nValue: $${Number(position.value).toFixed(2)}\n\nEnter the % move that should trigger.\nExample: *20* = alert if drops or pumps 20%`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -324,8 +304,46 @@ bot.action('done_picking', async (ctx) => {
   await ctx.answerCbQuery();
   const tokens = await loadWatchedTokens(ctx.from.id);
   if (!tokens.length) return ctx.reply('No tokens selected yet.');
-  const lines = tokens.map(t => `• *${t.token}* — alert at ${t.threshold}% drop`);
+  const lines = tokens.map(t => `• *${t.token}* — alert at ${t.threshold}% move`);
   ctx.reply(`🛡️ *Guards Active*\n\n${lines.join('\n')}\n\nZenGuard is monitoring 24/7.`, { parse_mode: 'Markdown' });
+});
+
+// FIX: swap % selection buttons after threshold input
+bot.action(/swap_pct_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.session ??= {};
+  const swapPercent = parseInt(ctx.match[1]);
+  const { selectedToken, watchedWallet, pendingThreshold } = ctx.session;
+
+  if (!selectedToken || !watchedWallet || !pendingThreshold) {
+    return ctx.reply('Session expired. Use /start to begin again.');
+  }
+
+  await addWatchedToken(ctx.from.id, {
+    address: watchedWallet,
+    token: selectedToken.symbol,
+    mint: selectedToken.mint,
+    threshold: pendingThreshold,
+    swapPercent,
+    autoSell: true,
+    since: new Date().toISOString(),
+  });
+
+  await scheduleMonitoring(ctx.from.id, watchedWallet, ctx);
+
+  ctx.session.awaitingThreshold = false;
+  ctx.session.selectedToken = null;
+  ctx.session.pendingThreshold = null;
+
+  ctx.reply(
+    `✅ *Protection Active*\n\n` +
+    `Token: *${selectedToken.symbol}*\n` +
+    `Trigger: *${pendingThreshold}%* move\n` +
+    `Auto-swap: *${swapPercent}%* of holdings → USDC\n` +
+    `Wallet: \`${watchedWallet.slice(0, 6)}...${watchedWallet.slice(-4)}\`\n\n` +
+    `ZenGuard is watching. It will execute automatically when triggered.`,
+    { parse_mode: 'Markdown' }
+  );
 });
 
 // ─── DASHBOARD / STATUS ───────────────────────────────────────────────────────
@@ -338,13 +356,11 @@ async function showStatus(ctx) {
     loadWatchedTokens(ctx.from.id),
     loadAllAddresses(ctx.from.id),
   ]);
-
   const solanaStatus = solana ? `✅ \`${solana.slice(0, 6)}...${solana.slice(-4)}\`` : '❌ Not connected';
   const evmStatus = evm ? `✅ \`${evm.slice(0, 6)}...${evm.slice(-4)}\`` : '❌ Not connected';
   const guardLines = tokens.length
-    ? tokens.map((t, i) => `${i + 1}. *${t.token}* — ${t.threshold}% drop alert\n   Since: ${new Date(t.since).toDateString()}`).join('\n\n')
+    ? tokens.map((t, i) => `${i + 1}. *${t.token}* — ${t.threshold}% alert${t.autoSell ? ` (auto-swap ${t.swapPercent ?? 100}%)` : ''}\n   Since: ${new Date(t.since).toDateString()}`).join('\n\n')
     : 'No active guards yet.';
-
   ctx.reply(
     `📋 *My Dashboard*\n\n🟣 Solana: ${solanaStatus}\n🔵 EVM: ${evmStatus}\n\n*Guards:*\n${guardLines}`,
     {
@@ -368,24 +384,18 @@ async function handleTokenLookup(ctx, mint) {
     const token = await getTokenInfo(mint);
     const chainKey = token.chain === 'solana' ? 'solana' : 'evm';
     const encryptedKey = await loadEncryptedKey(ctx.from.id, chainKey);
-
     if (!encryptedKey) {
       return ctx.reply(
         `⚠️ No ${token.chain === 'solana' ? '🟣 Solana' : '🔵 EVM'} wallet connected.\n\nConnect one to trade this token.`,
-        {
-          ...Markup.inlineKeyboard([[Markup.button.callback('🔐 My Wallets', 'my_wallets')]]),
-        }
+        { ...Markup.inlineKeyboard([[Markup.button.callback('🔐 My Wallets', 'my_wallets')]]) }
       );
     }
-
     const verified = token.verified ? '✅ Verified' : '⚠️ Unverified';
     const chainLabel = token.chain === 'solana' ? '🟣 Solana' : `🔵 ${token.dexChain?.toUpperCase() ?? 'EVM'}`;
     const mcap = token.marketCap > 0 ? `$${Number(token.marketCap).toLocaleString()}` : 'N/A';
-
     ctx.session ??= {};
     ctx.session.pendingBuy = { mint: token.address, token };
     ctx.session.awaitingBuyAmount = true;
-
     ctx.reply(
       `📊 *${token.name}* (${token.symbol})\n\n` +
       `💲 Price: $${Number(token.price).toFixed(8)}\n` +
@@ -397,12 +407,7 @@ async function handleTokenLookup(ctx, mint) {
       `${verified}\n\n` +
       `💬 How much *${token.nativeCurrency}* to spend?\n` +
       `e.g. type *0.1* for 0.1 ${token.nativeCurrency}`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('❌ Cancel', 'cancel_buy')],
-        ]),
-      }
+      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'cancel_buy')]]) }
     );
   } catch (err) {
     console.error('[bot] Token fetch failed:', err.message);
@@ -413,12 +418,7 @@ async function handleTokenLookup(ctx, mint) {
 bot.command('buy', async (ctx) => {
   const parts = ctx.message.text.split(' ');
   const mint = parts[1];
-  if (!mint) {
-    return ctx.reply(
-      `Just paste a contract address directly, or:\n\n\`/buy <contract_address>\``,
-      { parse_mode: 'Markdown' }
-    );
-  }
+  if (!mint) return ctx.reply(`Just paste a contract address directly — no command needed.`);
   await handleTokenLookup(ctx, mint);
 });
 
@@ -434,15 +434,9 @@ bot.action('confirm_buy', async (ctx) => {
   await ctx.answerCbQuery();
   const { mint, token, amount, estimatedTokens, nativeCurrency } = ctx.session?.pendingBuyConfirm ?? {};
   if (!mint) return ctx.reply('Session expired. Try again.');
-
   const chain = token.chain === 'solana' ? 'solana' : 'evm';
   const encryptedKey = await loadEncryptedKey(ctx.from.id, chain);
-
-  await ctx.reply(
-    `🔄 *Executing Buy*\n\nToken: *${token.symbol}*\nSpending: *${amount} ${nativeCurrency}*\nRouting via Zerion...`,
-    { parse_mode: 'Markdown' }
-  );
-
+  await ctx.reply(`🔄 *Executing Buy*\n\nToken: *${token.symbol}*\nSpending: *${amount} ${nativeCurrency}*\nRouting via Zerion...`, { parse_mode: 'Markdown' });
   try {
     let txHash;
     if (chain === 'solana') {
@@ -452,25 +446,11 @@ bot.action('confirm_buy', async (ctx) => {
       const { ethers } = await import('ethers');
       txHash = await swapToUSDCEVM(encryptedKey, token.chain, mint, ethers.parseEther(amount.toString()).toString());
     }
-
-    await savePosition(ctx.from.id, {
-      mint,
-      symbol: token.symbol,
-      amount: estimatedTokens,
-      buyPrice: token.price,
-      chain: token.chain,
-      nativeCurrency,
-      openedAt: new Date().toISOString(),
-      txHash,
-    });
-
+    await savePosition(ctx.from.id, { mint, symbol: token.symbol, amount: estimatedTokens, buyPrice: token.price, chain: token.chain, nativeCurrency, openedAt: new Date().toISOString(), txHash });
     ctx.session.pendingBuyConfirm = null;
     ctx.reply(
       `✅ *Buy Executed*\n\nBought ~${estimatedTokens} *${token.symbol}*\nSpent: ${amount} ${nativeCurrency}\nTx: \`${txHash}\``,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([[Markup.button.callback('📈 View Positions', 'view_positions')]]),
-      }
+      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('📈 View Positions', 'view_positions')]]) }
     );
   } catch (err) {
     console.error('[bot] Buy failed:', err.message);
@@ -486,12 +466,10 @@ bot.action('view_positions', async (ctx) => { await ctx.answerCbQuery(); showPos
 async function showPositions(ctx) {
   const positions = await loadPositions(ctx.from.id);
   if (!positions.length) {
-    return ctx.reply(
-      `📭 *No open positions.*\n\nPaste a contract address or use /buy to open a trade.`,
-      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('⚡ Quick Trade', 'mode_trade')]]) }
-    );
+    return ctx.reply(`📭 *No open positions.*\n\nPaste a contract address to open a trade.`, {
+      parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('⚡ Quick Trade', 'mode_trade')]])
+    });
   }
-
   let totalPnL = 0;
   for (const position of positions) {
     try {
@@ -503,14 +481,8 @@ async function showPositions(ctx) {
       const arrow = roiPct >= 0 ? '📈' : '📉';
       const sign = roiPct >= 0 ? '+' : '';
       const chainLabel = position.chain === 'solana' ? '🟣' : '🔵';
-
       await ctx.reply(
-        `${arrow} *${position.symbol}* ${chainLabel}\n\n` +
-        `Amount: ${position.amount}\n` +
-        `Entry: $${Number(position.buyPrice).toFixed(8)}\n` +
-        `Now: $${Number(currentPrice).toFixed(8)}\n` +
-        `ROI: *${sign}${roiPct.toFixed(2)}%* (${sign}$${roiUSD.toFixed(4)})\n` +
-        `Opened: ${new Date(position.openedAt).toDateString()}`,
+        `${arrow} *${position.symbol}* ${chainLabel}\n\nAmount: ${position.amount}\nEntry: $${Number(position.buyPrice).toFixed(8)}\nNow: $${Number(currentPrice).toFixed(8)}\nROI: *${sign}${roiPct.toFixed(2)}%* (${sign}$${roiUSD.toFixed(4)})\nOpened: ${new Date(position.openedAt).toDateString()}`,
         {
           parse_mode: 'Markdown',
           ...Markup.inlineKeyboard([
@@ -527,7 +499,6 @@ async function showPositions(ctx) {
       console.error(`[bot] Price fetch failed for ${position.symbol}:`, err.message);
     }
   }
-
   const sign = totalPnL >= 0 ? '+' : '';
   await ctx.reply(`📊 *Portfolio PnL: ${sign}$${totalPnL.toFixed(4)}*`, { parse_mode: 'Markdown' });
 }
@@ -548,13 +519,7 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
   ctx.session.pendingSell = { mint, pct, sellAmount, symbol: position.symbol, originalAmount: position.amount, chain: position.chain };
   ctx.reply(
     `⚠️ *Confirm Sell*\n\nSelling *${pct}%* of *${position.symbol}*\nAmount: ${sellAmount} tokens → USDC\n\nConfirm?`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([[
-        Markup.button.callback('✅ Confirm', 'confirm_sell'),
-        Markup.button.callback('❌ Cancel', 'cancel_sell'),
-      ]]),
-    }
+    { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Confirm', 'confirm_sell'), Markup.button.callback('❌ Cancel', 'cancel_sell')]]) }
   );
 });
 
@@ -608,7 +573,7 @@ bot.action(/autosell_(.+)/, async (ctx) => {
   ctx.session.awaitingAutoSell = { mint, symbol: position.symbol, chain: position.chain };
   ctx.session.awaitingAutoSellStage = 'stoploss';
   ctx.reply(
-    `🛡️ *Auto-Sell for ${position.symbol}*\n\nZenGuard auto-sells 100% when triggered.\n\nEnter *stop loss %*\n(e.g. *20* = sell if drops 20%):`,
+    `🛡️ *Auto-Sell for ${position.symbol}*\n\nZenGuard auto-sells when triggered.\n\nEnter *stop loss %*\n(e.g. *20* = sell if drops 20%):`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -617,6 +582,7 @@ bot.action(/autosell_(.+)/, async (ctx) => {
 
 bot.action('analyze_watched', async (ctx) => {
   await ctx.answerCbQuery();
+  // FIX: use spy wallet for this action specifically
   const address = ctx.session?.watchedWallet ?? await loadWatcher(ctx.from.id);
   if (!address) return ctx.reply('No wallet found. Use /start to begin.');
   await runAnalyze(ctx, address);
@@ -624,7 +590,9 @@ bot.action('analyze_watched', async (ctx) => {
 
 bot.command('analyze', async (ctx) => {
   const parts = ctx.message.text.split(' ');
-  const address = parts[1] ?? ctx.session?.watchedWallet ?? await loadWatcher(ctx.from.id);
+  // FIX: /analyze defaults to own Solana wallet, not spy wallet
+  const ownSolana = await loadWalletAddress(ctx.from.id, 'solana');
+  const address = parts[1] ?? ownSolana ?? await loadWatcher(ctx.from.id);
   if (!address) return ctx.reply('Usage: /analyze <wallet_address>');
   await runAnalyze(ctx, address);
 });
@@ -636,34 +604,23 @@ async function runAnalyze(ctx, address) {
       getPortfolio(address),
       getPositions(address),
     ]);
-
     const total = portfolio?.total?.positions ?? 0;
     const top = positions.slice(0, 5);
-
     if (top.length === 0) {
       return ctx.reply(
         `📊 *Wallet Snapshot*\n\n\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n💼 Total Value: *$${Number(total).toFixed(2)}*\n\nNo positions found. Fund this wallet to get started.`,
         { parse_mode: 'Markdown' }
       );
     }
-
     const lines = top.map((p) => {
       const value = p?.attributes?.value ?? 0;
       const change = p?.attributes?.changes?.percent_1d ?? 0;
       const symbol = p?.attributes?.fungible_info?.symbol ?? '???';
-      const arrow = change >= 0 ? '📈' : '📉';
-      return `${arrow} *${symbol}* — $${Number(value).toFixed(2)} (${Number(change).toFixed(1)}% 24h)`;
+      return `${change >= 0 ? '📈' : '📉'} *${symbol}* — $${Number(value).toFixed(2)} (${Number(change).toFixed(1)}% 24h)`;
     });
-
     await ctx.reply(
       `📊 *Wallet Snapshot*\n\n\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n💼 Total Value: *$${Number(total).toFixed(2)}*\n\n*Top Positions:*\n${lines.join('\n')}`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('⚡ Quick Trade', 'mode_trade')],
-          [Markup.button.callback('📋 My Dashboard', 'show_status')],
-        ]),
-      }
+      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('⚡ Quick Trade', 'mode_trade'), Markup.button.callback('📋 Dashboard', 'show_status')]]) }
     );
   } catch (err) {
     console.error('[bot] Analyze failed:', err.message);
@@ -700,10 +657,9 @@ bot.command('watch', async (ctx) => {
 bot.on('text', async (ctx) => {
   ctx.session ??= {};
   const text = ctx.message.text.trim();
-
   if (text.startsWith('/')) return;
 
-  // Auto-detect contract address — most important UX improvement
+  // Auto-detect contract address
   if (
     !ctx.session.awaitingPrivateKey &&
     !ctx.session.awaitingWatchAddress &&
@@ -716,70 +672,32 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-
-  bot.command('reset', async (ctx) => {
-  const { Redis } = await import('@upstash/redis');
-  const r = new Redis({
-    url: process.env.UPSTASH_REDIS_REST_URL,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN,
-  });
-  
-  const userId = ctx.from.id;
-  const keys = [
-    `zenguard:tokens:${userId}`,
-    `zenguard:watcher:${userId}`,
-    `zenguard:key:solana:${userId}`,
-    `zenguard:key:evm:${userId}`,
-    `zenguard:address:solana:${userId}`,
-    `zenguard:address:evm:${userId}`,
-    `zenguard:positions:${userId}`,
-    `zenguard:policy:${userId}`,
-  ];
-
-  await Promise.all(keys.map(k => r.del(k)));
-  ctx.session = {};
-  ctx.reply('✅ Account reset. Use /start to begin fresh.');
-});
-
   // Handle private key import
   if (ctx.session.awaitingPrivateKey) {
     const keyType = ctx.session.awaitingPrivateKey;
     const rawKey = text;
     ctx.session.awaitingPrivateKey = null;
-
     try {
       let walletData;
       if (keyType === 'solana') { walletData = importSolanaWallet(rawKey); }
       else { walletData = importEVMWallet(rawKey); }
-
       await saveEncryptedKey(ctx.from.id, walletData.encrypted, keyType);
       await saveWalletAddress(ctx.from.id, walletData.address, keyType);
-
       if (keyType === 'solana') {
         await saveWatcher(ctx.from.id, walletData.address);
         ctx.session.watchedWallet = walletData.address;
       }
-
       await ctx.reply(
         `✅ *${keyType === 'solana' ? '🟣 Solana' : '🔵 EVM'} Wallet Connected*\n\nAddress: \`${walletData.address}\`\n\nFetching holdings...`,
         { parse_mode: 'Markdown' }
       );
-
       const positions = await getPositions(walletData.address);
-
       if (!positions.length) {
         return ctx.reply(
           `⚠️ *Wallet is empty*\n\nAddress: \`${walletData.address}\`\n\nFund it to get started. Use /analyze to check balance anytime.`,
-          {
-            parse_mode: 'Markdown',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback('🔐 My Wallets', 'my_wallets')],
-              [Markup.button.callback('⚡ Start Trading', 'mode_trade')],
-            ]),
-          }
+          { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('🔐 My Wallets', 'my_wallets'), Markup.button.callback('⚡ Start Trading', 'mode_trade')]]) }
         );
       }
-
       ctx.session.positions = positions.slice(0, 20).map((p) => ({
         symbol: p?.attributes?.fungible_info?.symbol ?? '???',
         mint: p?.attributes?.fungible_info?.implementations?.find(i => i.chain_id === keyType)?.address ?? p?.id ?? p?.attributes?.fungible_info?.symbol,
@@ -787,7 +705,6 @@ bot.on('text', async (ctx) => {
         change: p?.attributes?.changes?.percent_1d ?? 0,
         price: p?.attributes?.price ?? 0,
       }));
-
       await showHoldingsPicker(ctx, walletData.address);
     } catch (err) {
       console.error('[bot] Wallet import failed:', err.message);
@@ -800,16 +717,11 @@ bot.on('text', async (ctx) => {
   if (ctx.session.awaitingWatchAddress) {
     const isSolana = !text.startsWith('0x') && text.length >= 32 && text.length <= 44;
     const isEVM = text.startsWith('0x') && text.length === 42;
-
-    if (!isSolana && !isEVM) {
-      return ctx.reply('⚠️ Invalid address. Paste a valid Solana or EVM wallet address.');
-    }
-
+    if (!isSolana && !isEVM) return ctx.reply('⚠️ Invalid address. Paste a valid Solana or EVM wallet address.');
     ctx.session.watchedWallet = text;
     ctx.session.awaitingWatchAddress = false;
     await saveWatcher(ctx.from.id, text);
     await ctx.reply('🔍 Fetching wallet holdings...');
-
     try {
       const positions = await getPositions(text);
       if (!positions.length) return ctx.reply('⚠️ No qualifying positions found. Try a different address.');
@@ -840,13 +752,7 @@ bot.on('text', async (ctx) => {
     ctx.session.pendingBuyConfirm = { mint, token, amount, estimatedTokens, nativeCurrency };
     ctx.reply(
       `⚠️ *Confirm Buy*\n\nBuying ~*${estimatedTokens} ${token.symbol}*\nSpending: *${amount} ${nativeCurrency}*\nPrice: $${Number(token.price).toFixed(8)}\n\nConfirm?`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([[
-          Markup.button.callback('✅ Confirm', 'confirm_buy'),
-          Markup.button.callback('❌ Cancel', 'cancel_buy'),
-        ]]),
-      }
+      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Confirm', 'confirm_buy'), Markup.button.callback('❌ Cancel', 'cancel_buy')]]) }
     );
     return;
   }
@@ -878,24 +784,54 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Handle alert threshold
+  // FIX: Handle alert threshold — asks swap % if own wallet
   if (ctx.session.awaitingThreshold) {
     const input = parseFloat(text);
     if (isNaN(input) || input <= 0 || input > 100) return ctx.reply('⚠️ Enter 1-100. Example: 15');
     const { selectedToken, watchedWallet } = ctx.session;
     if (!selectedToken || !watchedWallet) return ctx.reply('Session expired. Use /start to begin again.');
-    await addWatchedToken(ctx.from.id, { address: watchedWallet, token: selectedToken.symbol, mint: selectedToken.mint, threshold: input, since: new Date().toISOString() });
-    await scheduleMonitoring(ctx.from.id, watchedWallet, ctx);
-    ctx.session.awaitingThreshold = false;
-    ctx.session.selectedToken = null;
-    ctx.reply(
-      `✅ *Guard Active*\n\n*${selectedToken.symbol}* — alert at *${input}%* drop\nWallet: \`${watchedWallet.slice(0, 6)}...${watchedWallet.slice(-4)}\`\n\nZenGuard is watching.`,
-      { parse_mode: 'Markdown' }
-    );
+
+    // Check if this is the user's own wallet
+    const [ownSolana, ownEVM] = await Promise.all([
+      loadWalletAddress(ctx.from.id, 'solana'),
+      loadWalletAddress(ctx.from.id, 'evm'),
+    ]);
+    const isOwnWallet = watchedWallet === ownSolana || watchedWallet === ownEVM;
+
+    if (isOwnWallet) {
+      // Own wallet — ask swap percentage
+      ctx.session.pendingThreshold = input;
+      ctx.reply(
+        `⚙️ *Protection Mode*\n\nThreshold set at *${input}%*\n\nIf triggered, how much of your *${selectedToken.symbol}* should ZenGuard auto-swap to USDC?`,
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([[
+            Markup.button.callback('25%', `swap_pct_25`),
+            Markup.button.callback('50%', `swap_pct_50`),
+            Markup.button.callback('100%', `swap_pct_100`),
+          ]]),
+        }
+      );
+    } else {
+      // Spy wallet — alert only, no swap
+      await addWatchedToken(ctx.from.id, {
+        address: watchedWallet,
+        token: selectedToken.symbol,
+        mint: selectedToken.mint,
+        threshold: input,
+        since: new Date().toISOString(),
+        autoSell: false,
+      });
+      await scheduleMonitoring(ctx.from.id, watchedWallet, ctx);
+      ctx.session.awaitingThreshold = false;
+      ctx.session.selectedToken = null;
+      ctx.reply(
+        `✅ *Alert Active*\n\n*${selectedToken.symbol}* — alert at *${input}%* move\nWallet: \`${watchedWallet.slice(0, 6)}...${watchedWallet.slice(-4)}\`\n\nZenGuard is watching. You'll be alerted immediately.`,
+        { parse_mode: 'Markdown' }
+      );
+    }
   }
 });
-
-
 
 // ─── KEEP ALIVE ───────────────────────────────────────────────────────────────
 
@@ -904,6 +840,5 @@ http.createServer((req, res) => res.end('ZenGuard running.')).listen(process.env
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
 bot.launch();
-
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
