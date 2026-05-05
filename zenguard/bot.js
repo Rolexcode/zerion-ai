@@ -600,34 +600,51 @@ bot.command('analyze', async (ctx) => {
 async function runAnalyze(ctx, address) {
   await ctx.reply('🔍 Analyzing wallet...');
   try {
-    const [portfolio, positions] = await Promise.all([
-      getPortfolio(address),
-      getPositions(address),
-    ]);
-    const total = portfolio?.total?.positions ?? 0;
-    const top = positions.slice(0, 5);
-    if (top.length === 0) {
+    // Use stored positions from Redis + DexScreener — no Zerion API calls
+    const savedPositions = await loadPositions(ctx.from.id);
+
+    if (!savedPositions.length) {
       return ctx.reply(
-        `📊 *Wallet Snapshot*\n\n\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n💼 Total Value: *$${Number(total).toFixed(2)}*\n\nNo positions found. Fund this wallet to get started.`,
+        `📊 *Wallet*\n\n\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n` +
+        `No ZenGuard positions yet.\n\nPaste a contract address to start trading.`,
         { parse_mode: 'Markdown' }
       );
     }
-    const lines = top.map((p) => {
-      const value = p?.attributes?.value ?? 0;
-      const change = p?.attributes?.changes?.percent_1d ?? 0;
-      const symbol = p?.attributes?.fungible_info?.symbol ?? '???';
-      return `${change >= 0 ? '📈' : '📉'} *${symbol}* — $${Number(value).toFixed(2)} (${Number(change).toFixed(1)}% 24h)`;
-    });
+
+    let totalPnL = 0;
+    const lines = [];
+
+    for (const position of savedPositions) {
+      try {
+        const info = await getTokenInfo(position.mint); // DexScreener — no rate limit
+        const currentPrice = info.price ?? position.buyPrice;
+        const roiPct = ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
+        const roiUSD = (currentPrice - position.buyPrice) * parseFloat(position.amount);
+        totalPnL += roiUSD;
+        const sign = roiPct >= 0 ? '+' : '';
+        const arrow = roiPct >= 0 ? '📈' : '📉';
+        lines.push(`${arrow} *${position.symbol}* — $${Number(currentPrice).toFixed(6)} (${sign}${roiPct.toFixed(1)}%)`);
+      } catch {
+        lines.push(`• *${position.symbol}* — price unavailable`);
+      }
+    }
+
+    const pnlSign = totalPnL >= 0 ? '+' : '';
     await ctx.reply(
-      `📊 *Wallet Snapshot*\n\n\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n💼 Total Value: *$${Number(total).toFixed(2)}*\n\n*Top Positions:*\n${lines.join('\n')}`,
-      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('⚡ Quick Trade', 'mode_trade'), Markup.button.callback('📋 Dashboard', 'show_status')]]) }
+      `📊 *Wallet Snapshot*\n\n\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n` +
+      `*Positions:*\n${lines.join('\n')}\n\n` +
+      `Portfolio PnL: *${pnlSign}$${totalPnL.toFixed(4)}*`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('⚡ Quick Trade', 'mode_trade')],
+          [Markup.button.callback('📋 Dashboard', 'show_status')],
+        ]),
+      }
     );
   } catch (err) {
     console.error('[bot] Analyze failed:', err.message);
-    ctx.reply(
-      `📊 *Wallet Snapshot*\n\n\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\nCould not fetch data. This wallet may be new or have no history yet.\n\nFund it and try again with /analyze.`,
-      { parse_mode: 'Markdown' }
-    );
+    ctx.reply(`📊 Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\`\n\nUse /positions to view your trades.`, { parse_mode: 'Markdown' });
   }
 }
 
