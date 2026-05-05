@@ -193,6 +193,70 @@ let getSwapQuote;
   return txHash;
 }
 
+
+export async function swapSolanaTokens(encryptedKey, fromMint, toMint, amount) {
+  const keypair = getSolanaKeypair(encryptedKey);
+  const walletAddress = keypair.publicKey.toString();
+
+  let getSwapQuote;
+  try {
+    const swapModule = await import('../cli/lib/trading/swap.js');
+    getSwapQuote = swapModule.getSwapQuote;
+    console.log('[swapper] Using Zerion CLI getSwapQuote — Solana buy');
+  } catch {
+    getSwapQuote = null;
+  }
+
+  let txData;
+
+  if (getSwapQuote) {
+    const quote = await getSwapQuote({
+      fromToken: fromMint,
+      toToken: toMint,
+      amount: String(amount),
+      fromChain: 'solana',
+      toChain: 'solana',
+      walletAddress,
+    });
+    if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
+    txData = quote.transaction.data;
+  } else {
+    const { data: quoteData } = await zerion.get('/swap/quote', {
+      params: {
+        from_chain: 'solana',
+        to_chain: 'solana',
+        from_token: fromMint,
+        to_token: toMint,
+        amount,
+        slippage: 0.02,
+        from_address: walletAddress,
+      },
+    });
+    const tx = quoteData?.data?.attributes?.transaction;
+    if (!tx) throw new Error('No swap transaction returned from Zerion.');
+    txData = tx.data;
+  }
+
+  const txBuffer = Buffer.from(txData, 'base64');
+  let signed;
+  try {
+    const tx = VersionedTransaction.deserialize(txBuffer);
+    tx.sign([keypair]);
+    signed = tx.serialize();
+  } catch {
+    const tx = Transaction.from(txBuffer);
+    tx.sign(keypair);
+    signed = tx.serialize();
+  }
+
+  const txHash = await connection.sendRawTransaction(signed, {
+    skipPreflight: false,
+    maxRetries: 3,
+  });
+  await connection.confirmTransaction(txHash, 'confirmed');
+  return txHash;
+}
+
 // ─── EVM SWAP — via Zerion CLI getSwapQuote ───────────────────────────────────
 
 export async function swapToUSDCEVM(encryptedKey, chain, tokenAddress, amount) {
