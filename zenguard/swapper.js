@@ -11,6 +11,38 @@ import { Connection, VersionedTransaction, Transaction } from '@solana/web3.js';
 import { ethers } from 'ethers';
 import { getSolanaKeypair, getEVMWallet } from './wallet.js';
 
+
+
+// ─── ZERION RATE LIMITER ─────────────────────────────────────────────────────
+
+const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+
+let lastZerionCall = 0;
+
+async function zerionCall(fn) {
+  const now = Date.now();
+  const diff = now - lastZerionCall;
+
+  // Enforce ~1 request/sec (safe for free tier)
+  if (diff < 1200) {
+    await delay(1200 - diff);
+  }
+
+  lastZerionCall = Date.now();
+
+  try {
+    return await fn();
+  } catch (err) {
+    if (err.response?.status === 429) {
+      console.log('[rate-limit] 429 hit, backing off...');
+      await delay(2500);
+      return await fn(); // retry once
+    }
+    throw err;
+  }
+}
+
+
 const connection = new Connection(
   process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
   'confirmed'
