@@ -11,43 +11,6 @@ import { Connection, VersionedTransaction, Transaction } from '@solana/web3.js';
 import { ethers } from 'ethers';
 import { getSolanaKeypair, getEVMWallet } from './wallet.js';
 
-
-// Inject API key into CLI config so getSwapQuote authenticates correctly
-import { setConfigValue } from '../cli/lib/config.js';
-setConfigValue('apiKey', process.env.ZERION_API_KEY);
-
-
-
-// ─── ZERION RATE LIMITER ─────────────────────────────────────────────────────
-
-const delay = (ms) => new Promise((res) => setTimeout(res, ms));
-
-let lastZerionCall = 0;
-
-async function zerionCall(fn) {
-  const now = Date.now();
-  const diff = now - lastZerionCall;
-
-  // Enforce ~1 request/sec (safe for free tier)
-  if (diff < 1200) {
-    await delay(1200 - diff);
-  }
-
-  lastZerionCall = Date.now();
-
-  try {
-    return await fn();
-  } catch (err) {
-    if (err.response?.status === 429) {
-      console.log('[rate-limit] 429 hit, backing off...');
-      await delay(2500);
-      return await fn(); // retry once
-    }
-    throw err;
-  }
-}
-
-
 const connection = new Connection(
   process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
   'confirmed'
@@ -154,7 +117,7 @@ export async function getTokenInfo(addressInput) {
   };
 }
 
-// ─── SOLANA SWAP — via Zerion CLI getSwapQuote ────────────────────────────────
+// ─── SOLANA SWAP (protection mode: token → USDC) ─────────────────────────────
 
 export async function swapToUSDCSolana(encryptedKey, tokenMint, amount) {
   validateAddress(tokenMint, 'solana');
@@ -164,52 +127,24 @@ export async function swapToUSDCSolana(encryptedKey, tokenMint, amount) {
   const walletAddress = keypair.publicKey.toString();
   const USDC_SOLANA = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
-  // Route through Zerion CLI's getSwapQuote
-let getSwapQuote;
-  try {
-    const swapModule = await import('../cli/lib/trading/swap.js');
-    getSwapQuote = swapModule.getSwapQuote;
-    console.log('[swapper] Using Zerion CLI getSwapQuote — Solana');
-  } catch (err) {
-    console.log('[swapper] CLI import failed, using direct API — Solana:', err.message);
-    getSwapQuote = null;
-  }
-  let txData;
+  console.log('[swapper] Using Zerion CLI getSwapQuote — Solana protect');
+  console.log('[swapper] API key:', process.env.ZERION_API_KEY?.slice(0, 10) + '...');
 
-  if (getSwapQuote) {
-    // Use CLI's getSwapQuote — proper routing through Zerion
-    const quote = await getSwapQuote({
-      fromToken: tokenMint,
-      toToken: USDC_SOLANA,
-      amount: String(amount),
-      fromChain: 'solana',
-      toChain: 'solana',
-      walletAddress,
-    });
+  const swapModule = await import('../cli/lib/trading/swap.js');
+  const getSwapQuote = swapModule.getSwapQuote;
 
-    if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
-    txData = quote.transaction.data;
-  } else {
-    // Direct Zerion API fallback
-    const { data: quoteData } = await zerion.get('/swap/quote', {
-      params: {
-        from_chain: 'solana',
-        to_chain: 'solana',
-        from_token: tokenMint,
-        to_token: USDC_SOLANA,
-        amount,
-        slippage: 0.02,
-        from_address: walletAddress,
-      },
-    });
+  const quote = await getSwapQuote({
+    fromToken: tokenMint,
+    toToken: USDC_SOLANA,
+    amount: String(amount),
+    fromChain: 'solana',
+    toChain: 'solana',
+    walletAddress,
+  });
 
-    const tx = quoteData?.data?.attributes?.transaction;
-    if (!tx) throw new Error('No swap transaction returned from Zerion.');
-    txData = tx.data;
-  }
+  if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
 
-  const txBuffer = Buffer.from(txData, 'base64');
-
+  const txBuffer = Buffer.from(quote.transaction.data, 'base64');
   let signed;
   try {
     const tx = VersionedTransaction.deserialize(txBuffer);
@@ -221,60 +156,35 @@ let getSwapQuote;
     signed = tx.serialize();
   }
 
-  const txHash = await connection.sendRawTransaction(signed, {
-    skipPreflight: false,
-    maxRetries: 3,
-  });
-
+  const txHash = await connection.sendRawTransaction(signed, { skipPreflight: false, maxRetries: 3 });
   await connection.confirmTransaction(txHash, 'confirmed');
   return txHash;
 }
 
+// ─── SOLANA BUY (trade mode: SOL → token) ────────────────────────────────────
 
 export async function swapSolanaTokens(encryptedKey, fromMint, toMint, amount) {
   const keypair = getSolanaKeypair(encryptedKey);
   const walletAddress = keypair.publicKey.toString();
 
-  let getSwapQuote;
-  try {
-    const swapModule = await import('../cli/lib/trading/swap.js');
-    getSwapQuote = swapModule.getSwapQuote;
-    console.log('[swapper] Using Zerion CLI getSwapQuote — Solana buy');
-  } catch {
-    getSwapQuote = null;
-  }
+  console.log('[swapper] Using Zerion CLI getSwapQuote — Solana buy');
+  console.log('[swapper] API key:', process.env.ZERION_API_KEY?.slice(0, 10) + '...');
 
-  let txData;
+  const swapModule = await import('../cli/lib/trading/swap.js');
+  const getSwapQuote = swapModule.getSwapQuote;
 
-  if (getSwapQuote) {
-    const quote = await getSwapQuote({
-      fromToken: fromMint,
-      toToken: toMint,
-      amount: String(amount),
-      fromChain: 'solana',
-      toChain: 'solana',
-      walletAddress,
-    });
-    if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
-    txData = quote.transaction.data;
-  } else {
-    const { data: quoteData } = await zerion.get('/swap/quote', {
-      params: {
-        from_chain: 'solana',
-        to_chain: 'solana',
-        from_token: fromMint,
-        to_token: toMint,
-        amount,
-        slippage: 0.02,
-        from_address: walletAddress,
-      },
-    });
-    const tx = quoteData?.data?.attributes?.transaction;
-    if (!tx) throw new Error('No swap transaction returned from Zerion.');
-    txData = tx.data;
-  }
+  const quote = await getSwapQuote({
+    fromToken: fromMint,
+    toToken: toMint,
+    amount: String(amount),
+    fromChain: 'solana',
+    toChain: 'solana',
+    walletAddress,
+  });
 
-  const txBuffer = Buffer.from(txData, 'base64');
+  if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
+
+  const txBuffer = Buffer.from(quote.transaction.data, 'base64');
   let signed;
   try {
     const tx = VersionedTransaction.deserialize(txBuffer);
@@ -286,15 +196,12 @@ export async function swapSolanaTokens(encryptedKey, fromMint, toMint, amount) {
     signed = tx.serialize();
   }
 
-  const txHash = await connection.sendRawTransaction(signed, {
-    skipPreflight: false,
-    maxRetries: 3,
-  });
+  const txHash = await connection.sendRawTransaction(signed, { skipPreflight: false, maxRetries: 3 });
   await connection.confirmTransaction(txHash, 'confirmed');
   return txHash;
 }
 
-// ─── EVM SWAP — via Zerion CLI getSwapQuote ───────────────────────────────────
+// ─── EVM SWAP ─────────────────────────────────────────────────────────────────
 
 export async function swapToUSDCEVM(encryptedKey, chain, tokenAddress, amount) {
   validateAddress(tokenAddress, 'evm');
@@ -306,55 +213,28 @@ export async function swapToUSDCEVM(encryptedKey, chain, tokenAddress, amount) {
   const connectedWallet = wallet.connect(provider);
   const USDC_EVM = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
 
-let getSwapQuote;
-  try {
-    const swapModule = await import('../cli/lib/trading/swap.js');
-    getSwapQuote = swapModule.getSwapQuote;
-    console.log('[swapper] Using Zerion CLI getSwapQuote — EVM');
-  } catch (err) {
-    console.log('[swapper] CLI import failed, using direct API — EVM:', err.message);
-    getSwapQuote = null;
-  }
+  console.log('[swapper] Using Zerion CLI getSwapQuote — EVM');
+  console.log('[swapper] API key:', process.env.ZERION_API_KEY?.slice(0, 10) + '...');
+  console.log('[swapper] Chain:', chain, '| Token:', tokenAddress);
 
-  let txData;
-  let needsApproval = false;
-  let spender = null;
+  const swapModule = await import('../cli/lib/trading/swap.js');
+  const getSwapQuote = swapModule.getSwapQuote;
 
-  if (getSwapQuote) {
-    const quote = await getSwapQuote({
-      fromToken: tokenAddress,
-      toToken: USDC_EVM,
-      amount: String(amount),
-      fromChain: chain,
-      toChain: chain,
-      walletAddress: wallet.address,
-    });
+  const quote = await getSwapQuote({
+    fromToken: tokenAddress,
+    toToken: USDC_EVM,
+    amount: String(amount),
+    fromChain: chain,
+    toChain: chain,
+    walletAddress: wallet.address,
+  });
 
-    if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
-    txData = quote.transaction;
-    needsApproval = quote.preconditions?.enough_allowance === false;
-    spender = quote.spender;
-  } else {
-    const { data: quoteData } = await zerion.get('/swap/quote', {
-      params: {
-        from_chain: chain,
-        to_chain: chain,
-        from_token: tokenAddress,
-        to_token: USDC_EVM,
-        amount,
-        slippage: 0.02,
-        from_address: wallet.address,
-      },
-    });
+  if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
 
-    const attrs = quoteData?.data?.attributes;
-    if (!attrs?.transaction) throw new Error('No swap transaction returned from Zerion.');
-    txData = attrs.transaction;
-    needsApproval = attrs.preconditions?.enough_allowance === false;
-    spender = attrs.asset_spender;
-  }
+  const txData = quote.transaction;
+  const needsApproval = quote.preconditions?.enough_allowance === false;
+  const spender = quote.spender;
 
-  // Handle ERC-20 approval if needed
   if (needsApproval && spender) {
     validateAddress(spender, 'evm');
     const erc20Abi = ['function approve(address spender, uint256 amount) returns (bool)'];
