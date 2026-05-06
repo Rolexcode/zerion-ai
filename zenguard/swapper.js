@@ -12,6 +12,11 @@ import { ethers } from 'ethers';
 import { getSolanaKeypair, getEVMWallet } from './wallet.js';
 
 
+// Inject API key into CLI config so getSwapQuote authenticates correctly
+import { setConfigValue } from '../cli/lib/config.js';
+setConfigValue('apiKey', process.env.ZERION_API_KEY);
+
+
 
 // ─── ZERION RATE LIMITER ─────────────────────────────────────────────────────
 

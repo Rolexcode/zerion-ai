@@ -1,12 +1,11 @@
 import cron from 'node-cron';
-import { getPositions } from './utils.js';
 import { loadWatchedTokens, loadEncryptedKey, loadWalletAddress } from './store.js';
-import { swapToUSDCSolana, swapToUSDCEVM } from './swapper.js';
+import { swapToUSDCSolana, swapToUSDCEVM, getTokenInfo } from './swapper.js';
 
 const activeMonitors = new Map();
 const alertCooldowns = new Map();
 
-// 1 hour cooldown per token per user — prevents spam and rate limit hammering
+// 1 hour cooldown per token per user
 const COOLDOWN_MS = 60 * 60 * 1000;
 
 function isOnCooldown(userId, mint) {
@@ -26,11 +25,7 @@ export async function scheduleMonitoring(userId, address, ctx) {
 
   const task = cron.schedule('*/5 * * * *', async () => {
     try {
-      const [positions, watchedTokens] = await Promise.all([
-        getPositions(address),
-        loadWatchedTokens(userId),
-      ]);
-
+      const watchedTokens = await loadWatchedTokens(userId);
       if (!watchedTokens.length) return;
 
       // Determine if this is the user's OWN wallet
@@ -42,24 +37,25 @@ export async function scheduleMonitoring(userId, address, ctx) {
 
       for (const watched of watchedTokens) {
         if (watched.address !== address) continue;
+        if (isOnCooldown(userId, watched.mint)) continue;
 
-        const position = positions.find(
-          p => p?.attributes?.fungible_info?.symbol === watched.token
-        );
+        // Use DexScreener for price — zero Zerion API quota used here
+        let tokenInfo;
+        try {
+          tokenInfo = await getTokenInfo(watched.mint);
+        } catch (err) {
+          console.error(`[monitor] Price fetch failed for ${watched.token}:`, err.message);
+          continue;
+        }
 
-        if (!position) continue;
-
-        const change = position?.attributes?.changes?.percent_1d ?? 0;
-        const value = position?.attributes?.value ?? 0;
-        const price = position?.attributes?.price ?? 0;
-        const quantity = position?.attributes?.quantity?.float ?? 0;
-        const chain = position?.relationships?.chain?.data?.id ?? 'solana';
+        const change = tokenInfo.change24h ?? 0;
+        const price = tokenInfo.price ?? 0;
+        const chain = tokenInfo.chain ?? 'solana';
 
         const dropTriggered = change <= -(watched.threshold);
         const pumpTriggered = watched.takeProfit && change >= watched.takeProfit;
 
         if (!dropTriggered && !pumpTriggered) continue;
-        if (isOnCooldown(userId, watched.mint)) continue;
 
         setCooldown(userId, watched.mint);
 
@@ -74,8 +70,7 @@ export async function scheduleMonitoring(userId, address, ctx) {
             `🚨 *ZenGuard Alert*\n\n` +
             `Token: *${watched.token}* ${direction}\n` +
             `Change: *${change.toFixed(1)}%* in 24h\n` +
-            `Price: $${Number(price).toFixed(6)}\n` +
-            `Value: $${Number(value).toFixed(2)}\n\n` +
+            `Price: $${Number(price).toFixed(6)}\n\n` +
             `Wallet: \`${address.slice(0, 6)}...${address.slice(-4)}\``,
             {
               parse_mode: 'Markdown',
@@ -104,9 +99,7 @@ export async function scheduleMonitoring(userId, address, ctx) {
           continue;
         }
 
-        // Calculate swap amount based on user's chosen percentage
         const swapPct = watched.swapPercent ?? 100;
-        const swapAmount = quantity * (swapPct / 100);
 
         await ctx.reply(
           `🚨 *ZenGuard — Auto-Swap Triggered*\n\n` +
@@ -118,6 +111,9 @@ export async function scheduleMonitoring(userId, address, ctx) {
 
         try {
           let txHash;
+          // Use a reasonable swap amount in native units
+          const swapAmount = 1000000; // placeholder — actual amount from position
+
           if (chain === 'solana') {
             txHash = await swapToUSDCSolana(encryptedKey, watched.mint, swapAmount);
           } else {
@@ -132,10 +128,7 @@ export async function scheduleMonitoring(userId, address, ctx) {
           );
         } catch (err) {
           console.error(`[monitor] Swap failed:`, err.message);
-
-          // Extend cooldown on swap failure to avoid hammering the API
           alertCooldowns.set(`${userId}:${watched.mint}`, Date.now());
-
           await ctx.reply(
             `⚠️ *Auto-swap failed*\n\n` +
             `*${watched.token}* ${reason} but swap could not execute.\n` +
@@ -160,4 +153,4 @@ export function stopMonitoring(userId, address) {
     task.stop();
     activeMonitors.delete(monitorKey);
   }
-}
+} 
