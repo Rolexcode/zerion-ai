@@ -35,14 +35,14 @@ export async function getSwapQuote({
   const amountInSmallestUnits = parseUnits(amount, fromResolved.decimals).toString();
 
   const params = {
-    "input[from]": walletAddress,
+    "from": walletAddress,
+    "to": walletAddress,
     "input[chain_id]": fromChain,
     "input[fungible_id]": fromResolved.fungibleId,
-    "input[amount]": amountInSmallestUnits,
+    "input[amount]": amount,
     "output[chain_id]": toChain || fromChain,
     "output[fungible_id]": toResolved.fungibleId,
     "slippage_percent": slippage ?? getConfigValue("slippage") ?? DEFAULT_SLIPPAGE,
-    sort: "amount",
   };
 
   const response = await api.getSwapOffers(params);
@@ -82,31 +82,27 @@ export async function getSwapQuote({
     process.stderr.write(`Warning: fungible lookup failed, using resolved address: ${err.message}\n`);
   }
 
-  return {
-    id: best.id,
-    from: {
-      ...fromResolved,
-      chainAddress: chainTokenAddress,
-    },
-    to: toResolved,
-    inputAmount: amount,
-    inputAmountRaw: amountInSmallestUnits,
-    estimatedOutput: attrs.estimation?.output_quantity?.float,
-    outputMin: attrs.output_quantity_min?.float,
-    gas: attrs.estimation?.gas,
-    estimatedSeconds: attrs.estimation?.seconds,
-    fee: {
-      protocolPercent: attrs.fee?.protocol?.percent,
-      protocolAmount: attrs.fee?.protocol?.quantity?.float,
-    },
-    liquiditySource: attrs.liquidity_source?.name,
-    preconditions: attrs.preconditions_met || {},
-    spender: attrs.asset_spender,
-    transaction: attrs.transaction,
-    fromChain,
-    toChain: toChain || fromChain,
-    slippageType: attrs.slippage_type,
-  };
+ return {
+  id: best.id,
+  from: { ...fromResolved, chainAddress: fromResolved.address },
+  to: toResolved,
+  inputAmount: amount,
+  inputAmountRaw: amountInSmallestUnits,
+  estimatedOutput: attrs.output_amount?.quantity,
+  outputMin: attrs.minimum_output_amount?.quantity,
+  gas: attrs.transaction_swap?.evm?.gas ?? null,
+  estimatedSeconds: attrs.estimated_time_seconds,
+  fee: {
+    protocolPercent: attrs.protocol_fee?.percentage,
+    protocolAmount: attrs.protocol_fee?.amount?.quantity,
+  },
+  liquiditySource: attrs.liquidity_source?.name,
+  preconditions: {},
+  spender: attrs.transaction_approve?.evm?.to ?? null,
+  transaction: attrs.transaction_swap?.evm ?? attrs.transaction_swap?.solana,
+  fromChain,
+  toChain: toChain || fromChain,
+};
 }
 
 /**

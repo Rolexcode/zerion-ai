@@ -144,7 +144,8 @@ export async function swapToUSDCSolana(encryptedKey, tokenMint, amount) {
 
   if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
 
-  const txBuffer = Buffer.from(quote.transaction.data, 'base64');
+const txRaw = quote.transaction?.raw ?? quote.transaction?.data;
+const txBuffer = Buffer.from(txRaw, 'base64');
   let signed;
   try {
     const tx = VersionedTransaction.deserialize(txBuffer);
@@ -184,7 +185,8 @@ export async function swapSolanaTokens(encryptedKey, fromMint, toMint, amount) {
 
   if (!quote?.transaction) throw new Error('No transaction from Zerion CLI swap quote.');
 
-  const txBuffer = Buffer.from(quote.transaction.data, 'base64');
+const txRaw = quote.transaction?.raw ?? quote.transaction?.data;
+const txBuffer = Buffer.from(txRaw, 'base64');
   let signed;
   try {
     const tx = VersionedTransaction.deserialize(txBuffer);
