@@ -36,7 +36,6 @@ export async function getSwapQuote({
 
   const params = {
     "from": walletAddress,
-    "to": walletAddress,
     "input[chain_id]": fromChain,
     "input[fungible_id]": fromResolved.fungibleId,
     "input[amount]": amount,
