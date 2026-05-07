@@ -11,6 +11,11 @@ import { Connection, VersionedTransaction, Transaction } from '@solana/web3.js';
 import { ethers } from 'ethers';
 import { getSolanaKeypair, getEVMWallet } from './wallet.js';
 
+
+// Use dedicated swap key if available
+const SWAP_API_KEY = process.env.ZERION_SWAP_API_KEY || process.env.ZERION_API_KEY;
+process.env.ZERION_API_KEY = SWAP_API_KEY;
+
 const connection = new Connection(
   process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
   'confirmed'
