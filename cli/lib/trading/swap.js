@@ -44,6 +44,7 @@ export async function getSwapQuote({
     "slippage_percent": slippage ?? getConfigValue("slippage") ?? DEFAULT_SLIPPAGE,
   };
 
+    console.log('[swap] params being sent:', JSON.stringify(params, null, 2));
   const response = await api.getSwapOffers(params);
   const offers = response.data || [];
 
