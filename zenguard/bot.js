@@ -520,17 +520,22 @@ bot.action("confirm_buy", async (ctx) => {
   );
   try {
     let txHash;
-  if (chain === 'solana') {
-      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    if (chain === "solana") {
+      const SOL_MINT = "So11111111111111111111111111111111111111112";
       const amountLamports = Math.floor(amount * 1e9);
-      txHash = await swapSolanaTokens(encryptedKey, SOL_MINT, mint, amountLamports);
+      txHash = await swapSolanaTokens(
+        encryptedKey,
+        SOL_MINT,
+        mint,
+        amountLamports,
+      );
     } else {
       const { ethers } = await import("ethers");
       txHash = await swapToUSDCEVM(
         encryptedKey,
         token.chain,
         mint,
-        ethers.parseEther(amount.toString()).toString(),
+        amount.toString(),
       );
     }
     await savePosition(ctx.from.id, {
