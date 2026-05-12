@@ -531,7 +531,7 @@ bot.action("confirm_buy", async (ctx) => {
       );
     } else {
       const { ethers } = await import("ethers");
-      const ETH_ADDRESS = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+      const ETH_ADDRESS = 'eth';
       txHash = await swapToUSDCEVM(
         encryptedKey,
         token.chain,
