@@ -48,8 +48,10 @@ export async function fetchAPI(pathname, params = {}, useX402 = false) {
   }
 
   if (!response.ok) {
+    const details = payload?.errors || payload?.error || payload?.message || payload;
+    const suffix = details ? `: ${JSON.stringify(details).slice(0, 500)}` : "";
     const err = new Error(
-      `Zerion API error: ${response.status} ${response.statusText}`
+      `Zerion API error: ${response.status} ${response.statusText}${suffix}`
     );
     err.code = "api_error";
     err.status = response.status;
