@@ -1164,5 +1164,20 @@ try {
   console.error("[bot] Launch failed:", err.message);
   process.exit(1);
 }
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+function shutdown(signal) {
+  try {
+    if (bot.polling || bot.webhookServer) {
+      bot.stop(signal);
+    }
+  } catch (err) {
+    if (err.message !== "Bot is not running!") {
+      console.error(`[bot] Stop failed during ${signal}:`, err.message);
+    }
+  } finally {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5_000).unref();
+  }
+}
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
