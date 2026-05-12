@@ -36,6 +36,11 @@ import {
   clearPositions,
 } from "./store.js";
 
+if (!process.env.TELEGRAM_BOT_TOKEN) {
+  console.error("[bot] TELEGRAM_BOT_TOKEN is required.");
+  process.exit(1);
+}
+
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 bot.use(session());
 
@@ -1130,6 +1135,41 @@ http
 
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
 
-bot.launch();
+async function launchBot() {
+  const maxAttempts = Number(process.env.TELEGRAM_LAUNCH_ATTEMPTS || 8);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await bot.launch({ dropPendingUpdates: true });
+      console.log("[bot] ZenGuard polling started.");
+      return;
+    } catch (err) {
+      if (err?.response?.error_code !== 409 || attempt === maxAttempts) {
+        throw err;
+      }
+
+      const delayMs = Math.min(60_000, 5_000 * attempt);
+      console.warn(
+        `[bot] Telegram polling is still owned by another process. ` +
+          `Retrying in ${Math.round(delayMs / 1000)}s (${attempt}/${maxAttempts})...`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+try {
+  await launchBot();
+} catch (err) {
+  if (err?.response?.error_code === 409) {
+    console.error(
+      "[bot] Telegram rejected polling because another instance is already running. " +
+        "Stop any other Render/local process using this TELEGRAM_BOT_TOKEN, or use a separate token.",
+    );
+  } else {
+    console.error("[bot] Launch failed:", err.message);
+  }
+  process.exit(1);
+}
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

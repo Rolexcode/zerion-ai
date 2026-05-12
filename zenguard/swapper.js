@@ -145,10 +145,6 @@ export async function swapToUSDCSolana(encryptedKey, tokenMint, amount) {
   const USDC_SOLANA = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
   console.log("[swapper] Using Zerion CLI getSwapQuote — Solana protect");
-  console.log(
-    "[swapper] API key:",
-    process.env.ZERION_API_KEY?.slice(0, 10) + "...",
-  );
 
   const swapModule = await import("../cli/lib/trading/swap.js");
   const getSwapQuote = swapModule.getSwapQuote;
@@ -193,10 +189,6 @@ export async function swapSolanaTokens(encryptedKey, fromMint, toMint, amount) {
   const walletAddress = keypair.publicKey.toString();
 
   console.log("[swapper] Using Zerion CLI getSwapQuote — Solana buy");
-  console.log(
-    "[swapper] API key:",
-    process.env.ZERION_API_KEY?.slice(0, 10) + "...",
-  );
 
   const swapModule = await import("../cli/lib/trading/swap.js");
   const getSwapQuote = swapModule.getSwapQuote;
@@ -253,10 +245,6 @@ export async function swapToUSDCEVM(
   const connectedWallet = wallet.connect(provider);
   const USDC_EVM = outputToken ?? "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
   console.log("[swapper] Using Zerion CLI getSwapQuote — EVM");
-  console.log(
-    "[swapper] API key:",
-    process.env.ZERION_API_KEY?.slice(0, 10) + "...",
-  );
   console.log("[swapper] Chain:", chain, "| Token:", tokenAddress);
 
   const swapModule = await import("../cli/lib/trading/swap.js");

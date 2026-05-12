@@ -37,10 +37,10 @@ export async function getSwapQuote({
   const params = {
     "from": walletAddress,
     "input[chain_id]": fromChain,
-    "input[fungible_id]": fromToken,
+    "input[fungible_id]": fromResolved.fungibleId,
     "input[amount]": amount,
     "output[chain_id]": toChain || fromChain,
-    "output[fungible_id]": toToken,
+    "output[fungible_id]": toResolved.fungibleId,
     "slippage_percent": slippage ?? getConfigValue("slippage") ?? DEFAULT_SLIPPAGE,
   };
 
