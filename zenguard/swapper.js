@@ -243,7 +243,7 @@ export async function swapToUSDCEVM(
   amount,
   outputToken = null,
 ) {
-  validateAddress(tokenAddress, "evm");
+  if (tokenAddress !== 'eth') validateAddress(tokenAddress, 'evm');
   if (!amount || isNaN(Number(amount)) || Number(amount) <= 0)
     throw new Error("Invalid swap amount.");
   if (!RPC_URLS[chain]) throw new Error(`Unsupported chain: ${chain}`);
