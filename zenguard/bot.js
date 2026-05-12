@@ -1127,48 +1127,41 @@ bot.on("text", async (ctx) => {
   }
 });
 
-// ─── KEEP ALIVE ───────────────────────────────────────────────────────────────
+// ─── HTTP + TELEGRAM LAUNCH ───────────────────────────────────────────────────
 
-http
-  .createServer((req, res) => res.end("ZenGuard running."))
-  .listen(process.env.PORT || 0);
+const PORT = Number(process.env.PORT || 3000);
+const PUBLIC_URL = (process.env.WEBHOOK_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
+const WEBHOOK_PATH = process.env.TELEGRAM_WEBHOOK_PATH || "/telegram-webhook";
+const webhookCallback = bot.webhookCallback(WEBHOOK_PATH);
 
-// ─── LAUNCH ───────────────────────────────────────────────────────────────────
+const server = http.createServer((req, res) => {
+  if (PUBLIC_URL && req.url?.startsWith(WEBHOOK_PATH)) {
+    return webhookCallback(req, res);
+  }
+
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("ZenGuard running.");
+});
+
+await new Promise((resolve) => server.listen(PORT, resolve));
+console.log(`[bot] HTTP server listening on port ${PORT}.`);
 
 async function launchBot() {
-  const maxAttempts = Number(process.env.TELEGRAM_LAUNCH_ATTEMPTS || 8);
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await bot.launch({ dropPendingUpdates: true });
-      console.log("[bot] ZenGuard polling started.");
-      return;
-    } catch (err) {
-      if (err?.response?.error_code !== 409 || attempt === maxAttempts) {
-        throw err;
-      }
-
-      const delayMs = Math.min(60_000, 5_000 * attempt);
-      console.warn(
-        `[bot] Telegram polling is still owned by another process. ` +
-          `Retrying in ${Math.round(delayMs / 1000)}s (${attempt}/${maxAttempts})...`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
+  if (PUBLIC_URL) {
+    const webhookUrl = `${PUBLIC_URL}${WEBHOOK_PATH}`;
+    await bot.telegram.setWebhook(webhookUrl, { drop_pending_updates: true });
+    console.log(`[bot] ZenGuard webhook registered at ${webhookUrl}`);
+    return;
   }
+
+  await bot.launch({ dropPendingUpdates: true });
+  console.log("[bot] ZenGuard polling started.");
 }
 
 try {
   await launchBot();
 } catch (err) {
-  if (err?.response?.error_code === 409) {
-    console.error(
-      "[bot] Telegram rejected polling because another instance is already running. " +
-        "Stop any other Render/local process using this TELEGRAM_BOT_TOKEN, or use a separate token.",
-    );
-  } else {
-    console.error("[bot] Launch failed:", err.message);
-  }
+  console.error("[bot] Launch failed:", err.message);
   process.exit(1);
 }
 process.once("SIGINT", () => bot.stop("SIGINT"));
