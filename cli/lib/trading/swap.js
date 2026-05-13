@@ -98,8 +98,11 @@ export async function getSwapQuote({
     protocolAmount: attrs.protocol_fee?.amount?.quantity,
   },
   liquiditySource: attrs.liquidity_source?.name,
-  preconditions: {},
+  preconditions: {
+    enough_allowance: attrs.transaction_approve?.evm ? false : true,
+  },
   spender: attrs.transaction_approve?.evm?.to ?? null,
+  approvalTransaction: attrs.transaction_approve?.evm ?? null,
   transaction: attrs.transaction_swap?.evm ?? attrs.transaction_swap?.solana,
   fromChain,
   toChain: toChain || fromChain,

@@ -13,6 +13,7 @@ import {
   swapToUSDCSolana,
   swapToUSDCEVM,
   swapSolanaTokens,
+  getEVMTokenBalance,
   getTokenInfo,
   isContractAddress,
 } from "./swapper.js";
@@ -61,7 +62,7 @@ bot.start((ctx) => {
   ctx.reply(
     `⚡ *Welcome to ZenGuard*\n\n` +
       `Your autonomous onchain bodyguard — powered by Zerion.\n\n` +
-      `🔐 *My Wallets* — Connect Solana and EVM wallets. ZenGuard auto-swaps to USDC when your rules trigger.\n\n` +
+      `🔐 *My Wallets* — Connect Solana and EVM wallets. ZenGuard auto-swaps to ETH when your rules trigger.\n\n` +
       `👁 *Spy on a Wallet* — Watch any wallet 24/7. Get instant alerts on price moves.\n\n` +
       `⚡ *Quick Trade* — Paste any contract address to buy. Sell with one tap.\n\n` +
       `*What would you like to do?*`,
@@ -401,7 +402,7 @@ bot.action(/swap_pct_(\d+)/, async (ctx) => {
     `✅ *Protection Active*\n\n` +
       `Token: *${selectedToken.symbol}*\n` +
       `Trigger: *${pendingThreshold}%* move\n` +
-      `Auto-swap: *${swapPercent}%* of holdings → USDC\n` +
+      `Auto-swap: *${swapPercent}%* of holdings → ETH\n` +
       `Wallet: \`${watchedWallet.slice(0, 6)}...${watchedWallet.slice(-4)}\`\n\n` +
       `ZenGuard is watching. It will execute automatically when triggered.`,
     { parse_mode: "Markdown" },
@@ -671,18 +672,30 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
   const positions = await loadPositions(ctx.from.id);
   const position = positions.find((p) => p.mint === mint);
   if (!position) return ctx.reply("Position not found.");
-  const sellAmount = ((parseFloat(position.amount) * pct) / 100).toFixed(4);
+  let sourceAmount = parseFloat(position.amount);
+  if (position.chain && position.chain !== "solana") {
+    try {
+      const encryptedKey = await loadEncryptedKey(ctx.from.id, "evm");
+      sourceAmount = parseFloat(await getEVMTokenBalance(encryptedKey, position.chain, mint));
+    } catch (err) {
+      console.error("[bot] Live balance fetch failed:", err.message);
+    }
+  }
+  const sellAmount = Number(((sourceAmount * pct) / 100).toPrecision(12));
+  if (!Number.isFinite(sellAmount) || sellAmount <= 0) {
+    return ctx.reply("No sellable token balance found for this position.");
+  }
   ctx.session ??= {};
   ctx.session.pendingSell = {
     mint,
     pct,
     sellAmount,
     symbol: position.symbol,
-    originalAmount: position.amount,
+    originalAmount: sourceAmount,
     chain: position.chain,
   };
   ctx.reply(
-    `⚠️ *Confirm Sell*\n\nSelling *${pct}%* of *${position.symbol}*\nAmount: ${sellAmount} tokens → USDC\n\nConfirm?`,
+    `⚠️ *Confirm Sell*\n\nSelling *${pct}%* of *${position.symbol}*\nAmount: ${sellAmount} tokens → ETH\n\nConfirm?`,
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
@@ -704,7 +717,7 @@ bot.action("confirm_sell", async (ctx) => {
     ctx.from.id,
     chain === "solana" ? "solana" : "evm",
   );
-  await ctx.reply(`📤 Selling ${sellAmount} ${symbol} → USDC...`, {
+  await ctx.reply(`📤 Selling ${sellAmount} ${symbol} → ETH...`, {
     parse_mode: "Markdown",
   });
   try {
@@ -721,6 +734,7 @@ bot.action("confirm_sell", async (ctx) => {
         chain,
         mint,
         parseFloat(sellAmount),
+        "eth",
       );
     }
     const { hash: txHash } = normalizeSwapResult(swapResult);
@@ -732,13 +746,13 @@ bot.action("confirm_sell", async (ctx) => {
       if (pos) {
         pos.amount = (
           parseFloat(originalAmount) - parseFloat(sellAmount)
-        ).toFixed(4);
+        ).toPrecision(12);
         await savePosition(ctx.from.id, pos);
       }
     }
     ctx.session.pendingSell = null;
     ctx.reply(
-      `✅ *Sold*\n\n${sellAmount} ${symbol} → USDC\nTx: \`${txHash}\`\n${pct === 100 ? "Position closed." : `Remaining: ${(parseFloat(originalAmount) - parseFloat(sellAmount)).toFixed(4)} ${symbol}`}`,
+      `✅ *Sold*\n\n${sellAmount} ${symbol} → ETH\nTx: \`${txHash}\`\n${pct === 100 ? "Position closed." : `Remaining: ${(parseFloat(originalAmount) - parseFloat(sellAmount)).toPrecision(8)} ${symbol}`}`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
@@ -1109,7 +1123,7 @@ bot.on("text", async (ctx) => {
       // Own wallet — ask swap percentage
       ctx.session.pendingThreshold = input;
       ctx.reply(
-        `⚙️ *Protection Mode*\n\nThreshold set at *${input}%*\n\nIf triggered, how much of your *${selectedToken.symbol}* should ZenGuard auto-swap to USDC?`,
+        `⚙️ *Protection Mode*\n\nThreshold set at *${input}%*\n\nIf triggered, how much of your *${selectedToken.symbol}* should ZenGuard auto-swap to ETH?`,
         {
           parse_mode: "Markdown",
           ...Markup.inlineKeyboard([

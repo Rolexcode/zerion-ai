@@ -7,7 +7,7 @@ import {
   savePosition,
   removePosition,
 } from './store.js';
-import { swapToUSDCSolana, swapToUSDCEVM, getTokenInfo } from './swapper.js';
+import { swapToUSDCSolana, swapToUSDCEVM, getEVMTokenBalance, getTokenInfo } from './swapper.js';
 
 const activeMonitors = new Map();
 const alertCooldowns = new Map();
@@ -150,6 +150,13 @@ export async function scheduleMonitoring(userId, address, ctx) {
         const swapPct = watched.swapPercent ?? 100;
         const positions = await loadPositions(userId);
         const position = findPosition(positions, watched, chain);
+        if (position && chain !== 'solana') {
+          try {
+            position.amount = await getEVMTokenBalance(encryptedKey, chain, watched.mint);
+          } catch (err) {
+            console.error(`[monitor] Live balance fetch failed for ${watched.token}:`, err.message);
+          }
+        }
         const swapAmount = calculateSwapAmount(position, swapPct);
 
         if (!position || !swapAmount) {
@@ -166,7 +173,7 @@ export async function scheduleMonitoring(userId, address, ctx) {
           `🚨 *ZenGuard — Auto-Swap Triggered*\n\n` +
           `Token: *${watched.token}* ${direction}\n` +
           `Change: *${change.toFixed(1)}%* in 24h\n` +
-          `Swapping *${swapPct}%* (${swapAmount} ${watched.token}) -> USDC...`,
+          `Swapping *${swapPct}%* (${swapAmount} ${watched.token}) -> ETH...`,
           { parse_mode: 'Markdown' }
         );
 
@@ -176,14 +183,14 @@ export async function scheduleMonitoring(userId, address, ctx) {
           if (chain === 'solana') {
             swapResult = await swapToUSDCSolana(encryptedKey, watched.mint, swapAmount);
           } else {
-            swapResult = await swapToUSDCEVM(encryptedKey, chain, watched.mint, swapAmount);
+            swapResult = await swapToUSDCEVM(encryptedKey, chain, watched.mint, swapAmount, 'eth');
           }
           const { hash: txHash } = normalizeSwapResult(swapResult);
           const remaining = await updatePositionAfterSwap(userId, position, swapAmount, swapPct);
 
           await ctx.reply(
             `✅ *Swap Executed*\n\n` +
-            `${swapAmount} ${watched.token} -> USDC\n` +
+            `${swapAmount} ${watched.token} -> ETH\n` +
             `Tx: \`${txHash}\`\n` +
             `${remaining > 0 ? `Remaining: ${remaining.toPrecision(8)} ${watched.token}` : 'Position closed.'}`,
             { parse_mode: 'Markdown' }

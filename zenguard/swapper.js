@@ -42,6 +42,7 @@ const NATIVE_CURRENCY = {
 
 const ERC20_TRANSFER_ABI = [
   "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "function balanceOf(address owner) view returns (uint256)",
   "function decimals() view returns (uint8)",
 ];
 
@@ -126,6 +127,21 @@ async function extractReceivedTokenAmount(receipt, provider, tokenAddress, walle
 
   const decimals = await getErc20Decimals(provider, tokenAddress);
   return ethers.formatUnits(total, decimals);
+}
+
+export async function getEVMTokenBalance(encryptedKey, chain, tokenAddress) {
+  validateAddress(tokenAddress, "evm");
+  if (!RPC_URLS[chain]) throw new Error(`Unsupported chain: ${chain}`);
+
+  const wallet = getEVMWallet(encryptedKey);
+  const provider = new ethers.JsonRpcProvider(RPC_URLS[chain]);
+  const token = new ethers.Contract(tokenAddress, ERC20_TRANSFER_ABI, provider);
+  const [balance, decimals] = await Promise.all([
+    token.balanceOf(wallet.address),
+    token.decimals(),
+  ]);
+
+  return ethers.formatUnits(balance, Number(decimals));
 }
 
 // ─── GET TOKEN INFO — DEXSCREENER ─────────────────────────────────────────────
@@ -308,26 +324,29 @@ export async function swapToUSDCEVM(
     throw new Error("No transaction from Zerion CLI swap quote.");
 
   const txData = quote.transaction;
-  const needsApproval = quote.preconditions?.enough_allowance === false;
-  const spender = quote.spender;
+  if (!txData?.to) {
+    throw new Error("No executable swap transaction from Zerion quote.");
+  }
+  const swapCalldata = txData.data ?? txData.input ?? txData.raw ?? "0x";
+  if (tokenAddress !== "eth" && swapCalldata === "0x") {
+    throw new Error("Zerion quote did not include swap calldata for this token sell.");
+  }
 
-  if (needsApproval && spender) {
-    validateAddress(spender, "evm");
-    const erc20Abi = [
-      "function approve(address spender, uint256 amount) returns (bool)",
-    ];
-    const tokenContract = new ethers.Contract(
-      tokenAddress,
-      erc20Abi,
-      connectedWallet,
-    );
-    const approvalTx = await tokenContract.approve(spender, ethers.MaxUint256);
+  const needsApproval = quote.preconditions?.enough_allowance === false;
+
+  if (needsApproval && quote.approvalTransaction?.to) {
+    const approvalTx = await connectedWallet.sendTransaction({
+      to: quote.approvalTransaction.to,
+      data: quote.approvalTransaction.data ?? quote.approvalTransaction.input ?? "0x",
+      value: quote.approvalTransaction.value ? BigInt(quote.approvalTransaction.value) : 0n,
+      gasLimit: quote.approvalTransaction.gas ? BigInt(quote.approvalTransaction.gas) : 120000n,
+    });
     await approvalTx.wait();
   }
 
   const tx = await connectedWallet.sendTransaction({
     to: txData.to,
-    data: txData.data,
+    data: swapCalldata,
     value: txData.value ? BigInt(txData.value) : 0n,
     gasLimit: txData.gas ? BigInt(txData.gas) : 300000n,
   });
