@@ -40,6 +40,11 @@ const NATIVE_CURRENCY = {
   "binance-smart-chain": "BNB",
 };
 
+const ERC20_TRANSFER_ABI = [
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "function decimals() view returns (uint8)",
+];
+
 const zerion = axios.create({
   baseURL: "https://api.zerion.io/v1",
   headers: {
@@ -81,6 +86,46 @@ function validateAddress(address, type = "any") {
   )
     throw new Error("Invalid address format.");
   return a;
+}
+
+function normalizeAddress(address) {
+  return address?.toLowerCase();
+}
+
+async function getErc20Decimals(provider, tokenAddress) {
+  const token = new ethers.Contract(tokenAddress, ERC20_TRANSFER_ABI, provider);
+  return Number(await token.decimals());
+}
+
+async function extractReceivedTokenAmount(receipt, provider, tokenAddress, walletAddress) {
+  if (!tokenAddress || tokenAddress === "eth" || !EVM_ADDRESS_REGEX.test(tokenAddress)) {
+    return null;
+  }
+
+  const iface = new ethers.Interface(ERC20_TRANSFER_ABI);
+  const recipient = normalizeAddress(walletAddress);
+  let total = 0n;
+
+  for (const log of receipt.logs ?? []) {
+    if (normalizeAddress(log.address) !== normalizeAddress(tokenAddress)) continue;
+
+    try {
+      const parsed = iface.parseLog(log);
+      if (
+        parsed?.name === "Transfer" &&
+        normalizeAddress(parsed.args.to) === recipient
+      ) {
+        total += parsed.args.value;
+      }
+    } catch {
+      // Ignore logs from the same token that do not match the standard event.
+    }
+  }
+
+  if (total === 0n) return null;
+
+  const decimals = await getErc20Decimals(provider, tokenAddress);
+  return ethers.formatUnits(total, decimals);
 }
 
 // ─── GET TOKEN INFO — DEXSCREENER ─────────────────────────────────────────────
@@ -179,7 +224,7 @@ export async function swapToUSDCSolana(encryptedKey, tokenMint, amount) {
     maxRetries: 3,
   });
   await connection.confirmTransaction(txHash, "confirmed");
-  return txHash;
+  return { hash: txHash, outputAmount: quote.estimatedOutput ?? null };
 }
 
 // ─── SOLANA BUY (trade mode: SOL → token) ────────────────────────────────────
@@ -223,7 +268,7 @@ export async function swapSolanaTokens(encryptedKey, fromMint, toMint, amount) {
     maxRetries: 3,
   });
   await connection.confirmTransaction(txHash, "confirmed");
-  return txHash;
+  return { hash: txHash, outputAmount: quote.estimatedOutput ?? null };
 }
 
 // ─── EVM SWAP ─────────────────────────────────────────────────────────────────
@@ -287,6 +332,16 @@ export async function swapToUSDCEVM(
     gasLimit: txData.gas ? BigInt(txData.gas) : 300000n,
   });
 
-  await tx.wait();
-  return tx.hash;
+  const receipt = await tx.wait();
+  const outputAmount = await extractReceivedTokenAmount(
+    receipt,
+    provider,
+    USDC_EVM,
+    wallet.address,
+  );
+
+  return {
+    hash: tx.hash,
+    outputAmount: outputAmount ?? quote.estimatedOutput ?? null,
+  };
 }

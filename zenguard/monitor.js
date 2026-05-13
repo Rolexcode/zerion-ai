@@ -57,6 +57,16 @@ async function updatePositionAfterSwap(userId, position, swapAmount, swapPct) {
   return remaining;
 }
 
+function normalizeSwapResult(result) {
+  if (typeof result === 'string') {
+    return { hash: result, outputAmount: null };
+  }
+  return {
+    hash: result?.hash,
+    outputAmount: result?.outputAmount ?? null,
+  };
+}
+
 export async function scheduleMonitoring(userId, address, ctx) {
   const monitorKey = `${userId}:${address}`;
   if (activeMonitors.has(monitorKey)) return;
@@ -161,13 +171,14 @@ export async function scheduleMonitoring(userId, address, ctx) {
         );
 
         try {
-          let txHash;
+          let swapResult;
 
           if (chain === 'solana') {
-            txHash = await swapToUSDCSolana(encryptedKey, watched.mint, swapAmount);
+            swapResult = await swapToUSDCSolana(encryptedKey, watched.mint, swapAmount);
           } else {
-            txHash = await swapToUSDCEVM(encryptedKey, chain, watched.mint, swapAmount);
+            swapResult = await swapToUSDCEVM(encryptedKey, chain, watched.mint, swapAmount);
           }
+          const { hash: txHash } = normalizeSwapResult(swapResult);
           const remaining = await updatePositionAfterSwap(userId, position, swapAmount, swapPct);
 
           await ctx.reply(

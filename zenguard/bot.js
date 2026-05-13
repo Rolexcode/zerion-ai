@@ -44,6 +44,16 @@ if (!process.env.TELEGRAM_BOT_TOKEN) {
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 bot.use(session());
 
+function normalizeSwapResult(result) {
+  if (typeof result === "string") {
+    return { hash: result, outputAmount: null };
+  }
+  return {
+    hash: result?.hash,
+    outputAmount: result?.outputAmount ?? null,
+  };
+}
+
 // ─── START ────────────────────────────────────────────────────────────────────
 
 bot.start((ctx) => {
@@ -524,11 +534,11 @@ bot.action("confirm_buy", async (ctx) => {
     { parse_mode: "Markdown" },
   );
   try {
-    let txHash;
+    let swapResult;
     if (chain === "solana") {
       const SOL_MINT = "So11111111111111111111111111111111111111112";
       const amountLamports = Math.floor(amount * 1e9);
-      txHash = await swapSolanaTokens(
+      swapResult = await swapSolanaTokens(
         encryptedKey,
         SOL_MINT,
         mint,
@@ -537,7 +547,7 @@ bot.action("confirm_buy", async (ctx) => {
     } else {
       const { ethers } = await import("ethers");
       const ETH_ADDRESS = 'eth';
-      txHash = await swapToUSDCEVM(
+      swapResult = await swapToUSDCEVM(
         encryptedKey,
         token.chain,
         ETH_ADDRESS,
@@ -545,10 +555,14 @@ bot.action("confirm_buy", async (ctx) => {
         mint,
       );
     }
+    const { hash: txHash, outputAmount } = normalizeSwapResult(swapResult);
+    const positionAmount = outputAmount ?? estimatedTokens;
+
     await savePosition(ctx.from.id, {
       mint,
       symbol: token.symbol,
-      amount: estimatedTokens,
+      amount: positionAmount,
+      estimatedAmount: estimatedTokens,
       buyPrice: token.price,
       chain: token.chain,
       nativeCurrency,
@@ -557,7 +571,7 @@ bot.action("confirm_buy", async (ctx) => {
     });
     ctx.session.pendingBuyConfirm = null;
     ctx.reply(
-      `✅ *Buy Executed*\n\nBought ~${estimatedTokens} *${token.symbol}*\nSpent: ${amount} ${nativeCurrency}\nTx: \`${txHash}\``,
+      `✅ *Buy Executed*\n\nBought ${outputAmount ? "" : "~"}${positionAmount} *${token.symbol}*\nSpent: ${amount} ${nativeCurrency}\nTx: \`${txHash}\``,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
@@ -694,21 +708,22 @@ bot.action("confirm_sell", async (ctx) => {
     parse_mode: "Markdown",
   });
   try {
-    let txHash;
+    let swapResult;
     if (chain === "solana" || !chain) {
-      txHash = await swapToUSDCSolana(
+      swapResult = await swapToUSDCSolana(
         encryptedKey,
         mint,
         parseFloat(sellAmount),
       );
     } else {
-      txHash = await swapToUSDCEVM(
+      swapResult = await swapToUSDCEVM(
         encryptedKey,
         chain,
         mint,
         parseFloat(sellAmount),
       );
     }
+    const { hash: txHash } = normalizeSwapResult(swapResult);
     if (pct === 100) {
       await removePosition(ctx.from.id, mint);
     } else {
@@ -1012,7 +1027,7 @@ bot.on("text", async (ctx) => {
       nativeCurrency,
     };
     ctx.reply(
-      `⚠️ *Confirm Buy*\n\nBuying ~*${estimatedTokens} ${token.symbol}*\nSpending: *${amount} ${nativeCurrency}*\nPrice: $${Number(token.price).toFixed(8)}\n\nConfirm?`,
+      `⚠️ *Confirm Buy*\n\nToken: *${token.symbol}*\nSpending: *${amount} ${nativeCurrency}*\nPrice: $${Number(token.price).toFixed(8)}\n\nConfirm?`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
