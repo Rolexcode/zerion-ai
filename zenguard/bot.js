@@ -603,7 +603,11 @@ bot.action("confirm_buy", async (ctx) => {
     );
   } catch (err) {
     console.error("[bot] Buy failed:", err.message);
-    ctx.reply(`⚠️ Buy failed: ${err.message}`);
+    const hint =
+      token?.chain === "solana" && /swap cannot be performed/i.test(err.message)
+        ? "\n\nThis Solana token may not have a supported Zerion route yet. Try a more liquid token or test on Base."
+        : "";
+    ctx.reply(`⚠️ Buy failed: ${err.message}${hint}`);
   }
 });
 
