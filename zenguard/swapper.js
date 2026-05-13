@@ -203,7 +203,7 @@ export async function swapToUSDCSolana(encryptedKey, tokenMint, amount) {
 
   const keypair = getSolanaKeypair(encryptedKey);
   const walletAddress = keypair.publicKey.toString();
-  const USDC_SOLANA = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const SOL = "SOL";
 
   console.log("[swapper] Using Zerion CLI getSwapQuote — Solana protect");
 
@@ -212,7 +212,7 @@ export async function swapToUSDCSolana(encryptedKey, tokenMint, amount) {
 
   const quote = await getSwapQuote({
     fromToken: tokenMint,
-    toToken: USDC_SOLANA,
+    toToken: SOL,
     amount: String(amount),
     fromChain: "solana",
     toChain: "solana",

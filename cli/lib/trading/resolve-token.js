@@ -74,7 +74,9 @@ export async function resolveToken(query, chainId) {
   const verified = results.find((r) => r.attributes?.flags?.verified);
   const best = verified || results[0];
 
-  const impl = best.attributes?.implementations?.[0];
+  const impl = (best.attributes?.implementations || []).find(
+    (i) => i.chain_id === chainId
+  ) || best.attributes?.implementations?.[0];
 
   return {
     fungibleId: best.id,

@@ -55,6 +55,22 @@ function normalizeSwapResult(result) {
   };
 }
 
+function formatTokenAmount(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return String(value ?? "0");
+  if (amount >= 1) return amount.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  return amount.toPrecision(6);
+}
+
+function formatUsd(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "$0.00";
+  return `$${amount.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: amount >= 1 ? 2 : 6,
+  })}`;
+}
+
 // ─── START ────────────────────────────────────────────────────────────────────
 
 bot.start((ctx) => {
@@ -537,13 +553,11 @@ bot.action("confirm_buy", async (ctx) => {
   try {
     let swapResult;
     if (chain === "solana") {
-      const SOL_MINT = "So11111111111111111111111111111111111111112";
-      const amountLamports = Math.floor(amount * 1e9);
       swapResult = await swapSolanaTokens(
         encryptedKey,
-        SOL_MINT,
+        "SOL",
         mint,
-        amountLamports,
+        amount.toString(),
       );
     } else {
       const { ethers } = await import("ethers");
@@ -558,6 +572,7 @@ bot.action("confirm_buy", async (ctx) => {
     }
     const { hash: txHash, outputAmount } = normalizeSwapResult(swapResult);
     const positionAmount = outputAmount ?? estimatedTokens;
+    const positionValueUsd = Number(positionAmount) * Number(token.price);
 
     await savePosition(ctx.from.id, {
       mint,
@@ -565,6 +580,7 @@ bot.action("confirm_buy", async (ctx) => {
       amount: positionAmount,
       estimatedAmount: estimatedTokens,
       buyPrice: token.price,
+      entryValueUsd: positionValueUsd,
       chain: token.chain,
       nativeCurrency,
       openedAt: new Date().toISOString(),
@@ -572,7 +588,7 @@ bot.action("confirm_buy", async (ctx) => {
     });
     ctx.session.pendingBuyConfirm = null;
     ctx.reply(
-      `✅ *Buy Executed*\n\nBought ${outputAmount ? "" : "~"}${positionAmount} *${token.symbol}*\nSpent: ${amount} ${nativeCurrency}\nTx: \`${txHash}\``,
+      `✅ *Buy Executed*\n\nBought ${outputAmount ? "" : "~"}${formatTokenAmount(positionAmount)} *${token.symbol}*\nValue: *${formatUsd(positionValueUsd)}*\nSpent: ${amount} ${nativeCurrency}\nTx: \`${txHash}\``,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
@@ -612,16 +628,18 @@ async function showPositions(ctx) {
     try {
       const info = await getTokenInfo(position.mint);
       const currentPrice = info.price ?? position.buyPrice;
+      const tokenAmount = parseFloat(position.amount);
+      const currentValue = currentPrice * tokenAmount;
+      const entryValue = position.entryValueUsd ?? position.buyPrice * tokenAmount;
       const roiPct =
         ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
-      const roiUSD =
-        (currentPrice - position.buyPrice) * parseFloat(position.amount);
+      const roiUSD = currentValue - entryValue;
       totalPnL += roiUSD;
       const arrow = roiPct >= 0 ? "📈" : "📉";
       const sign = roiPct >= 0 ? "+" : "";
       const chainLabel = position.chain === "solana" ? "🟣" : "🔵";
       await ctx.reply(
-        `${arrow} *${position.symbol}* ${chainLabel}\n\nAmount: ${position.amount}\nEntry: $${Number(position.buyPrice).toFixed(8)}\nNow: $${Number(currentPrice).toFixed(8)}\nROI: *${sign}${roiPct.toFixed(2)}%* (${sign}$${roiUSD.toFixed(4)})\nOpened: ${new Date(position.openedAt).toDateString()}`,
+        `${arrow} *${position.symbol}* ${chainLabel}\n\nAmount: ${formatTokenAmount(position.amount)}\nValue: *${formatUsd(currentValue)}*\nEntry Value: ${formatUsd(entryValue)}\nEntry: $${Number(position.buyPrice).toFixed(8)}\nNow: $${Number(currentPrice).toFixed(8)}\nROI: *${sign}${roiPct.toFixed(2)}%* (${sign}${formatUsd(Math.abs(roiUSD))})\nOpened: ${new Date(position.openedAt).toDateString()}`,
         {
           parse_mode: "Markdown",
           ...Markup.inlineKeyboard([
@@ -835,15 +853,17 @@ async function runAnalyze(ctx, address) {
       try {
         const info = await getTokenInfo(position.mint); // DexScreener — no rate limit
         const currentPrice = info.price ?? position.buyPrice;
+        const tokenAmount = parseFloat(position.amount);
+        const currentValue = currentPrice * tokenAmount;
+        const entryValue = position.entryValueUsd ?? position.buyPrice * tokenAmount;
         const roiPct =
           ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
-        const roiUSD =
-          (currentPrice - position.buyPrice) * parseFloat(position.amount);
+        const roiUSD = currentValue - entryValue;
         totalPnL += roiUSD;
         const sign = roiPct >= 0 ? "+" : "";
         const arrow = roiPct >= 0 ? "📈" : "📉";
         lines.push(
-          `${arrow} *${position.symbol}* — $${Number(currentPrice).toFixed(6)} (${sign}${roiPct.toFixed(1)}%)`,
+          `${arrow} *${position.symbol}* — ${formatTokenAmount(position.amount)} tokens, ${formatUsd(currentValue)} (${sign}${roiPct.toFixed(1)}%)`,
         );
       } catch {
         lines.push(`• *${position.symbol}* — price unavailable`);
@@ -854,7 +874,7 @@ async function runAnalyze(ctx, address) {
     await ctx.reply(
       `📊 *Wallet Snapshot*\n\n\`${address.slice(0, 6)}...${address.slice(-4)}\`\n\n` +
         `*Positions:*\n${lines.join("\n")}\n\n` +
-        `Portfolio PnL: *${pnlSign}$${totalPnL.toFixed(4)}*`,
+        `Portfolio PnL: *${pnlSign}${formatUsd(Math.abs(totalPnL))}*`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
