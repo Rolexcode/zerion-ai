@@ -71,6 +71,12 @@ function formatUsd(value) {
   })}`;
 }
 
+function formatSignedUsd(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "+$0.00";
+  return `${amount >= 0 ? "+" : "-"}${formatUsd(Math.abs(amount))}`;
+}
+
 function getTxExplorerUrl(chain, hash) {
   if (!hash) return null;
   if (chain === "solana") return `https://solscan.io/tx/${hash}`;
@@ -711,6 +717,21 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
   if (!Number.isFinite(sellAmount) || sellAmount <= 0) {
     return ctx.reply("No sellable token balance found for this position.");
   }
+  let currentPrice = Number(position.buyPrice);
+  try {
+    const info = await getTokenInfo(mint);
+    currentPrice = Number(info.price ?? currentPrice);
+  } catch (err) {
+    console.error("[bot] Sell price fetch failed:", err.message);
+  }
+  const trackedAmount = Number(position.amount);
+  const entryValue = Number(position.entryValueUsd ?? Number(position.buyPrice) * trackedAmount);
+  const costBasisUsd =
+    Number.isFinite(entryValue) && Number.isFinite(trackedAmount) && trackedAmount > 0
+      ? (entryValue * sellAmount) / trackedAmount
+      : Number(position.buyPrice) * sellAmount;
+  const sellValueUsd = currentPrice * sellAmount;
+  const estimatedPnlUsd = sellValueUsd - costBasisUsd;
   ctx.session ??= {};
   ctx.session.pendingSell = {
     mint,
@@ -719,9 +740,14 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
     symbol: position.symbol,
     originalAmount: sourceAmount,
     chain: position.chain,
+    costBasisUsd,
+    sellValueUsd,
+    estimatedPnlUsd,
+    currentPrice,
   };
+  const exitAsset = position.chain === "solana" ? "SOL" : "ETH";
   ctx.reply(
-    `⚠️ *Confirm Sell*\n\nSelling *${pct}%* of *${position.symbol}*\nAmount: ${sellAmount} tokens → ETH\n\nConfirm?`,
+    `⚠️ *Confirm Sell*\n\nSelling *${pct}%* of *${position.symbol}*\nAmount: ${formatTokenAmount(sellAmount)} tokens → ${exitAsset}\n\nEst. Value: *${formatUsd(sellValueUsd)}*\nCost Basis: ${formatUsd(costBasisUsd)}\nEst. PnL: *${formatSignedUsd(estimatedPnlUsd)}*\n\nConfirm?`,
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
@@ -736,14 +762,25 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
 
 bot.action("confirm_sell", async (ctx) => {
   await ctx.answerCbQuery();
-  const { mint, pct, sellAmount, symbol, originalAmount, chain } =
+  const {
+    mint,
+    pct,
+    sellAmount,
+    symbol,
+    originalAmount,
+    chain,
+    costBasisUsd,
+    sellValueUsd,
+    estimatedPnlUsd,
+  } =
     ctx.session?.pendingSell ?? {};
   if (!mint) return ctx.reply("Session expired.");
   const encryptedKey = await loadEncryptedKey(
     ctx.from.id,
     chain === "solana" ? "solana" : "evm",
   );
-  await ctx.reply(`📤 Selling ${sellAmount} ${symbol} → ETH...`, {
+  const exitAsset = chain === "solana" ? "SOL" : "ETH";
+  await ctx.reply(`📤 Selling ${formatTokenAmount(sellAmount)} ${symbol} → ${exitAsset}...`, {
     parse_mode: "Markdown",
   });
   try {
@@ -778,7 +815,7 @@ bot.action("confirm_sell", async (ctx) => {
     }
     ctx.session.pendingSell = null;
     ctx.reply(
-      `✅ *Sold*\n\n${sellAmount} ${symbol} → ${chain === "solana" ? "SOL" : "ETH"}\nTx: ${formatTxLink(chain, txHash)}\n${pct === 100 ? "Position closed." : `Remaining: ${(parseFloat(originalAmount) - parseFloat(sellAmount)).toPrecision(8)} ${symbol}`}`,
+      `✅ *Sell Executed*\n\nSold: ${formatTokenAmount(sellAmount)} *${symbol}*\nReceived: ${exitAsset}\nSold Value: *${formatUsd(sellValueUsd)}*\nBought With: ${formatUsd(costBasisUsd)}\nPnL: *${formatSignedUsd(estimatedPnlUsd)}*\nTx: ${formatTxLink(chain, txHash)}\n${pct === 100 ? "Position closed." : `Remaining: ${formatTokenAmount(parseFloat(originalAmount) - parseFloat(sellAmount))} ${symbol}`}`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
