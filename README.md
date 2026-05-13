@@ -332,7 +332,6 @@ Successful logs:
 
 ## Current Limitations
 
-- Completed live execution proof is on Base/EVM. Solana path is wired but requires a funded Solana wallet to demonstrate end-to-end.
 - Monitoring uses price polling (DexScreener) rather than direct onchain event subscriptions.
 - Telegram UI is intentionally lightweight for demo speed.
 
