@@ -1,5 +1,12 @@
 import cron from 'node-cron';
-import { loadWatchedTokens, loadEncryptedKey, loadWalletAddress } from './store.js';
+import {
+  loadWatchedTokens,
+  loadEncryptedKey,
+  loadWalletAddress,
+  loadPositions,
+  savePosition,
+  removePosition,
+} from './store.js';
 import { swapToUSDCSolana, swapToUSDCEVM, getTokenInfo } from './swapper.js';
 
 const activeMonitors = new Map();
@@ -17,6 +24,37 @@ function isOnCooldown(userId, mint) {
 
 function setCooldown(userId, mint) {
   alertCooldowns.set(`${userId}:${mint}`, Date.now());
+}
+
+function findPosition(positions, watched, chain) {
+  return positions.find((position) => {
+    const sameToken = position.mint?.toLowerCase() === watched.mint?.toLowerCase();
+    const sameChain = !position.chain || !chain || position.chain === chain;
+    return sameToken && sameChain;
+  });
+}
+
+function calculateSwapAmount(position, swapPct) {
+  const positionAmount = Number(position?.amount);
+  const pct = Number(swapPct);
+  if (!Number.isFinite(positionAmount) || positionAmount <= 0) return null;
+  if (!Number.isFinite(pct) || pct <= 0 || pct > 100) return null;
+  return Number(((positionAmount * pct) / 100).toPrecision(12));
+}
+
+async function updatePositionAfterSwap(userId, position, swapAmount, swapPct) {
+  if (swapPct >= 100 || swapAmount >= Number(position.amount)) {
+    await removePosition(userId, position.mint);
+    return 0;
+  }
+
+  const remaining = Math.max(0, Number(position.amount) - swapAmount);
+  await savePosition(userId, {
+    ...position,
+    amount: remaining.toPrecision(12),
+    lastAutoSellAt: new Date().toISOString(),
+  });
+  return remaining;
 }
 
 export async function scheduleMonitoring(userId, address, ctx) {
@@ -50,7 +88,7 @@ export async function scheduleMonitoring(userId, address, ctx) {
 
         const change = tokenInfo.change24h ?? 0;
         const price = tokenInfo.price ?? 0;
-        const chain = tokenInfo.chain ?? 'solana';
+        const chain = watched.chain ?? tokenInfo.chain ?? 'solana';
 
         const dropTriggered = change <= -(watched.threshold);
         const pumpTriggered = watched.takeProfit && change >= watched.takeProfit;
@@ -100,30 +138,43 @@ export async function scheduleMonitoring(userId, address, ctx) {
         }
 
         const swapPct = watched.swapPercent ?? 100;
+        const positions = await loadPositions(userId);
+        const position = findPosition(positions, watched, chain);
+        const swapAmount = calculateSwapAmount(position, swapPct);
+
+        if (!position || !swapAmount) {
+          await ctx.reply(
+            `⚠️ *Auto-swap skipped*\n\n` +
+            `*${watched.token}* ${reason}, but ZenGuard could not find a tracked position amount to sell.\n\n` +
+            `Open Positions and confirm this token is tracked before enabling auto-sell.`,
+            { parse_mode: 'Markdown' }
+          );
+          continue;
+        }
 
         await ctx.reply(
           `🚨 *ZenGuard — Auto-Swap Triggered*\n\n` +
           `Token: *${watched.token}* ${direction}\n` +
           `Change: *${change.toFixed(1)}%* in 24h\n` +
-          `Swapping *${swapPct}%* of position → USDC...`,
+          `Swapping *${swapPct}%* (${swapAmount} ${watched.token}) -> USDC...`,
           { parse_mode: 'Markdown' }
         );
 
         try {
           let txHash;
-          // Use a reasonable swap amount in native units
-          const swapAmount = 1000000; // placeholder — actual amount from position
 
           if (chain === 'solana') {
             txHash = await swapToUSDCSolana(encryptedKey, watched.mint, swapAmount);
           } else {
             txHash = await swapToUSDCEVM(encryptedKey, chain, watched.mint, swapAmount);
           }
+          const remaining = await updatePositionAfterSwap(userId, position, swapAmount, swapPct);
 
           await ctx.reply(
             `✅ *Swap Executed*\n\n` +
-            `${swapPct}% of ${watched.token} → USDC\n` +
-            `Tx: \`${txHash}\``,
+            `${swapAmount} ${watched.token} -> USDC\n` +
+            `Tx: \`${txHash}\`\n` +
+            `${remaining > 0 ? `Remaining: ${remaining.toPrecision(8)} ${watched.token}` : 'Position closed.'}`,
             { parse_mode: 'Markdown' }
           );
         } catch (err) {
