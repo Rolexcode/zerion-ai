@@ -71,6 +71,27 @@ function formatUsd(value) {
   })}`;
 }
 
+function getTxExplorerUrl(chain, hash) {
+  if (!hash) return null;
+  if (chain === "solana") return `https://solscan.io/tx/${hash}`;
+  const explorers = {
+    base: "https://basescan.org/tx",
+    ethereum: "https://etherscan.io/tx",
+    arbitrum: "https://arbiscan.io/tx",
+    optimism: "https://optimistic.etherscan.io/tx",
+    polygon: "https://polygonscan.com/tx",
+    bsc: "https://bscscan.com/tx",
+  };
+  const baseUrl = explorers[chain] ?? "https://etherscan.io/tx";
+  return `${baseUrl}/${hash}`;
+}
+
+function formatTxLink(chain, hash) {
+  const url = getTxExplorerUrl(chain, hash);
+  if (!url) return "`pending`";
+  return `[${hash.slice(0, 10)}...${hash.slice(-8)}](${url})`;
+}
+
 // ─── START ────────────────────────────────────────────────────────────────────
 
 bot.start((ctx) => {
@@ -565,10 +586,11 @@ bot.action("confirm_buy", async (ctx) => {
     });
     ctx.session.pendingBuyConfirm = null;
     ctx.reply(
-      `✅ *Buy Executed*\n\nBought ${outputAmount ? "" : "~"}${formatTokenAmount(positionAmount)} *${token.symbol}*\nValue: *${formatUsd(positionValueUsd)}*\nSpent: ${amount} ${nativeCurrency}\nTx: \`${txHash}\``,
+      `✅ *Buy Executed*\n\nBought ${outputAmount ? "" : "~"}${formatTokenAmount(positionAmount)} *${token.symbol}*\nValue: *${formatUsd(positionValueUsd)}*\nSpent: ${amount} ${nativeCurrency}\nTx: ${formatTxLink(token.chain, txHash)}`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
+          [Markup.button.url("🔎 View Transaction", getTxExplorerUrl(token.chain, txHash))],
           [Markup.button.callback("📈 View Positions", "view_positions")],
         ]),
       },
@@ -586,6 +608,10 @@ bot.action("view_positions", async (ctx) => {
   await ctx.answerCbQuery();
   showPositions(ctx);
 });
+bot.action("refresh_positions", async (ctx) => {
+  await ctx.answerCbQuery("Refreshing positions...");
+  showPositions(ctx);
+});
 
 async function showPositions(ctx) {
   const positions = await loadPositions(ctx.from.id);
@@ -596,6 +622,7 @@ async function showPositions(ctx) {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
           [Markup.button.callback("⚡ Quick Trade", "mode_trade")],
+          [Markup.button.callback("🔄 Refresh", "refresh_positions")],
         ]),
       },
     );
@@ -640,6 +667,7 @@ async function showPositions(ctx) {
                 `autosell_${position.mint}`,
               ),
             ],
+            [Markup.button.callback("🔄 Refresh Position", "refresh_positions")],
           ]),
         },
       );
@@ -653,6 +681,9 @@ async function showPositions(ctx) {
   const sign = totalPnL >= 0 ? "+" : "";
   await ctx.reply(`📊 *Portfolio PnL: ${sign}$${totalPnL.toFixed(4)}*`, {
     parse_mode: "Markdown",
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback("🔄 Refresh Positions", "refresh_positions")],
+    ]),
   });
 }
 
@@ -747,10 +778,11 @@ bot.action("confirm_sell", async (ctx) => {
     }
     ctx.session.pendingSell = null;
     ctx.reply(
-      `✅ *Sold*\n\n${sellAmount} ${symbol} → ETH\nTx: \`${txHash}\`\n${pct === 100 ? "Position closed." : `Remaining: ${(parseFloat(originalAmount) - parseFloat(sellAmount)).toPrecision(8)} ${symbol}`}`,
+      `✅ *Sold*\n\n${sellAmount} ${symbol} → ${chain === "solana" ? "SOL" : "ETH"}\nTx: ${formatTxLink(chain, txHash)}\n${pct === 100 ? "Position closed." : `Remaining: ${(parseFloat(originalAmount) - parseFloat(sellAmount)).toPrecision(8)} ${symbol}`}`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
+          [Markup.button.url("🔎 View Transaction", getTxExplorerUrl(chain, txHash))],
           [Markup.button.callback("📈 Positions", "view_positions")],
         ]),
       },

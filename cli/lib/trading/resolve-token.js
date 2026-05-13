@@ -8,7 +8,7 @@ import { NATIVE_ASSET_ADDRESS } from "../util/constants.js";
 // Hardcoded aliases for the most common tokens — avoids API call for basic swaps
 const NATIVE_ALIASES = new Map([
   ["ETH", { fungibleId: "eth", symbol: "ETH", decimals: 18, address: NATIVE_ASSET_ADDRESS }],
-  ["SOL", { fungibleId: "11111111111111111111111111111111", symbol: "SOL", decimals: 9, address: "So11111111111111111111111111111111111111112" }],
+  ["SOL", { fungibleId: "solana", symbol: "SOL", decimals: 9, address: "So11111111111111111111111111111111111111112" }],
   ["WETH", { fungibleId: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", symbol: "WETH", decimals: 18 }],
   ["USDC", { fungibleId: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", symbol: "USDC", decimals: 6 }],
   ["USDT", { fungibleId: "0xdac17f958d2ee523a2206206994597c13d831ec7", symbol: "USDT", decimals: 6 }],
