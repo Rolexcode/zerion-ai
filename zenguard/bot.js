@@ -133,6 +133,21 @@ function isDustPosition(amount, usdValue = null) {
   return Number.isFinite(value) && value > 0 && value < 0.01;
 }
 
+const LIVE_BALANCE_TIMEOUT_MS = Number(process.env.LIVE_BALANCE_TIMEOUT_MS || 2500);
+
+function withTimeout(promise, ms, label) {
+  let timeoutId;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timeoutId)),
+    new Promise((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error(`${label} timed out after ${ms}ms`)),
+        ms,
+      );
+    }),
+  ]);
+}
+
 async function getLivePositionAmount(userId, position) {
   if (position.chain === "solana") {
     const encryptedKey = await loadEncryptedKey(userId, "solana");
@@ -990,6 +1005,98 @@ bot.action(/refresh_position_(.+)/, async (ctx) => {
   });
 });
 
+bot.action(/generate_pnl_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery("Generating PnL card...");
+
+  const mint = ctx.match[1];
+  const positions = await loadPositions(ctx.from.id);
+  const position = positions.find((p) => p.mint === mint);
+  if (!position) {
+    return ctx.reply("Position not found. Tap Refresh and try again.");
+  }
+
+  try {
+    const info = await getTokenInfo(position.mint);
+    const currentPrice = info.price ?? position.buyPrice;
+    let tokenAmount = parseFloat(position.amount);
+    try {
+      const liveAmount = await withTimeout(
+        getLivePositionAmount(ctx.from.id, position),
+        LIVE_BALANCE_TIMEOUT_MS,
+        "Live position balance",
+      );
+      if (Number.isFinite(liveAmount)) tokenAmount = liveAmount;
+    } catch (err) {
+      console.error(`[bot] PnL card live balance failed for ${position.symbol}:`, err.message);
+    }
+
+    const currentValue = currentPrice * tokenAmount;
+    const entryValue = position.entryValueUsd ?? position.buyPrice * tokenAmount;
+    const roiPct = ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
+    const roiUSD = currentValue - entryValue;
+    const sign = roiPct >= 0 ? "+" : "";
+    const chainName = position.chain === "solana" ? "Solana" : position.chain?.toUpperCase();
+    const openedAt = new Date(position.openedAt).toDateString();
+    const duration = formatHoldDuration(position.openedAt);
+    const pair = getPositionPair(position);
+    const caption =
+      `📊 *${pair} PnL Card*\n\n` +
+      `Invested: ${formatUsd(entryValue)}\n` +
+      `Current Value: *${formatUsd(currentValue)}*\n` +
+      `PnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\n` +
+      `ROI: *${sign}${roiPct.toFixed(2)}%*\n` +
+      `Held: ${duration}\n\n` +
+      `by RolextheExplorer`;
+
+    const imageFile = await withTimeout(
+      buildPnlImageFile({
+        isProfit: roiUSD >= 0,
+        symbol: position.symbol,
+        pair,
+        chainName,
+        currentValue,
+        entryValue,
+        roiPct,
+        roiUSD,
+        openedAt,
+        duration,
+      }),
+      10000,
+      "PnL image render",
+    );
+
+    if (!imageFile) {
+      return ctx.reply(`PnL card could not be generated right now.\n\n${caption}`, {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Refresh Position", `refresh_position_${position.mint}`)],
+        ]),
+      });
+    }
+
+    return ctx.replyWithPhoto(imageFile, {
+      caption,
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("🔄 Refresh Position", `refresh_position_${position.mint}`),
+          Markup.button.callback("📈 Positions", "view_positions"),
+        ],
+      ]),
+    });
+  } catch (err) {
+    console.error("[bot] PnL card failed:", err.message);
+    return ctx.reply(
+      `Could not generate the PnL card right now.\n\n${err.message}`,
+      {
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Refresh Position", `refresh_position_${mint}`)],
+        ]),
+      },
+    );
+  }
+});
+
 async function showPositions(ctx, { singleMint = null, editMessageId = null, replaceList = false } = {}) {
   if (!singleMint) {
     if (replaceList) {
@@ -1029,7 +1136,11 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null, rep
       const currentPrice = info.price ?? position.buyPrice;
       let tokenAmount = parseFloat(position.amount);
       try {
-        const liveAmount = await getLivePositionAmount(ctx.from.id, position);
+        const liveAmount = await withTimeout(
+          getLivePositionAmount(ctx.from.id, position),
+          LIVE_BALANCE_TIMEOUT_MS,
+          "Live position balance",
+        );
         if (Number.isFinite(liveAmount)) tokenAmount = liveAmount;
       } catch (err) {
         console.error(`[bot] Live position balance failed for ${position.symbol}:`, err.message);
@@ -1062,18 +1173,7 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null, rep
       const pair = getPositionPair(position);
       const positionText = `${arrow} *${pair}* ${chainLabel}\n\nChain: ${chainName}\nHeld: ${duration}\nLive Amount: ${formatTokenAmount(tokenAmount)} ${position.symbol}\nInvested: ${formatUsd(entryValue)}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSynced from wallet balance. Sell buttons use a small safety buffer.`;
       const positionMessage = await replyPositionCard(ctx, {
-        imageFile: await buildPnlImageFile({
-          isProfit: roiUSD >= 0,
-          symbol: position.symbol,
-          pair,
-          chainName,
-          currentValue,
-          entryValue,
-          roiPct,
-          roiUSD,
-          openedAt,
-          duration,
-        }),
+        imageFile: null,
         text: positionText,
         keyboard: {
           ...Markup.inlineKeyboard([
@@ -1090,6 +1190,9 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null, rep
                 "Sell 100%",
                 `sell_pct_${position.mint}_100`,
               ),
+            ],
+            [
+              Markup.button.callback("📊 PnL Card", `generate_pnl_${position.mint}`),
             ],
             [
               Markup.button.callback(
