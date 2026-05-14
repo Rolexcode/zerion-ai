@@ -1,4 +1,4 @@
-# ZenGuard — Autonomous Onchain Bodyguard
+﻿# ZenGuard — Autonomous Onchain Bodyguard
 
 > **Zerion CLI Frontier Hackathon** | Superteam Earn  
 > *The user decides the rules. The agent acts inside them.*
@@ -339,7 +339,6 @@ Successful logs:
 
 ## Future Improvements
 
-- Per-user daily spend caps
 - Expiring policies with time windows
 - Multi-token portfolio rebalancing
 - Web dashboard for position history and charts
