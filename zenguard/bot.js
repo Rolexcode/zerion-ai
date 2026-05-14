@@ -309,18 +309,24 @@ async function buildPnlImageFile(positionData) {
       }),
     });
 
+    const bytes = Buffer.from(await response.arrayBuffer());
     const contentType = response.headers.get("content-type") || "";
-    if (contentType.includes("image/")) {
-      const bytes = Buffer.from(await response.arrayBuffer());
+    const isPng =
+      bytes.length > 8 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47;
+
+    if (contentType.includes("image/") || isPng) {
       return Input.fromBuffer(bytes, "zenguard-pnl.png");
     }
 
+    const detail = bytes.toString("utf8", 0, Math.min(bytes.length, 240));
     if (!response.ok) {
-      const detail = await response.text();
       throw new Error(`QuickChart ${response.status}: ${detail.slice(0, 160)}`);
     }
 
-    const detail = await response.text();
     throw new Error(`QuickChart returned ${contentType || "unknown content"}: ${detail.slice(0, 160)}`);
   } catch (err) {
     console.error("[bot] PnL image render failed:", err.message);
