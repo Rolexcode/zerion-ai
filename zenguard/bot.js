@@ -181,27 +181,134 @@ function buildPnlImageUrl({
   openedAt,
   duration,
 }) {
-  const bg = isProfit ? "041f1a" : "23080c";
-  const fg = isProfit ? "7CFF9B" : "FF6B6B";
-  const title = isProfit ? "ZEN GUARD PROFIT" : "ZEN GUARD LOSS";
-  const sign = roiUSD >= 0 ? "+" : "-";
-  const gainLabel = isProfit ? "Current Gain" : "Current Loss";
-  const lines = [
-    title,
-    pair ?? `${symbol}/${chainName}`,
-    `${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}%`,
-    `Held ${duration}`,
-    `Invested ${formatUsd(entryValue)} | Current ${formatUsd(currentValue)}`,
-    `${gainLabel} ${sign}${formatUsd(Math.abs(roiUSD))}`,
-    `Entered ${openedAt}`,
-    "by RolextheExplorer",
-  ];
+  const accent = isProfit ? "#4DFF88" : "#FF5D73";
+  const accentSoft = isProfit ? "rgba(77,255,136,0.15)" : "rgba(255,93,115,0.16)";
+  const roiText = `${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}%`;
+  const gainLabel = isProfit ? "CURRENT GAIN" : "CURRENT LOSS";
+  const pnlText = `${roiUSD >= 0 ? "+" : "-"}${formatUsd(Math.abs(roiUSD))}`;
+  const config = `{
+    type: 'bar',
+    data: { labels: [''], datasets: [{ data: [0], backgroundColor: 'rgba(0,0,0,0)' }] },
+    options: {
+      responsive: false,
+      animation: false,
+      events: [],
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: { x: { display: false }, y: { display: false } }
+    },
+    plugins: [{
+      id: 'zenguard-card',
+      beforeDraw: function(chart) {
+        const ctx = chart.ctx;
+        const w = chart.width;
+        const h = chart.height;
+        const pair = ${JSON.stringify(pair ?? `${symbol}/${chainName}`)};
+        const roi = ${JSON.stringify(roiText)};
+        const duration = ${JSON.stringify(duration)};
+        const invested = ${JSON.stringify(formatUsd(entryValue))};
+        const current = ${JSON.stringify(formatUsd(currentValue))};
+        const pnl = ${JSON.stringify(pnlText)};
+        const opened = ${JSON.stringify(openedAt)};
+        const gainLabel = ${JSON.stringify(gainLabel)};
 
-  return `https://placehold.co/1200x675/${bg}/${fg}.png?font=montserrat&text=${encodeURIComponent(lines.join("\n"))}`;
+        const grad = ctx.createLinearGradient(0, 0, w, h);
+        grad.addColorStop(0, '#041B38');
+        grad.addColorStop(0.55, '#06111F');
+        grad.addColorStop(1, '#020711');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.fillStyle = ${JSON.stringify(accentSoft)};
+        ctx.beginPath();
+        ctx.moveTo(0, h);
+        ctx.lineTo(w * 0.42, 0);
+        ctx.lineTo(w * 0.58, 0);
+        ctx.lineTo(w * 0.18, h);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(w * 0.45, 0);
+        ctx.lineTo(w * 0.18, h);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        for (let i = 0; i < 7; i++) {
+          const x = 70 + i * 140;
+          const y = 560 - (i % 3) * 58;
+          ctx.fillRect(x, y, 54, 120);
+        }
+
+        ctx.fillStyle = '#EAF4FF';
+        ctx.font = '700 34px Inter, Arial';
+        ctx.fillText('ZENGUARD', 760, 78);
+        ctx.font = '500 20px Inter, Arial';
+        ctx.fillStyle = 'rgba(234,244,255,0.72)';
+        ctx.fillText('by RolextheExplorer', 760, 108);
+
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '800 52px Inter, Arial';
+        ctx.fillText(pair, 650, 210);
+
+        ctx.fillStyle = ${JSON.stringify(accent)};
+        ctx.font = '900 96px Inter, Arial';
+        ctx.fillText(roi, 650, 320);
+
+        ctx.fillStyle = 'rgba(255,255,255,0.82)';
+        ctx.font = '600 26px Inter, Arial';
+        ctx.fillText('Held ' + duration, 650, 365);
+
+        ctx.fillStyle = 'rgba(255,255,255,0.62)';
+        ctx.font = '700 22px Inter, Arial';
+        ctx.fillText('INVESTED', 650, 455);
+        ctx.fillText(gainLabel, 875, 455);
+        ctx.fillText('OPENED', 650, 555);
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '800 34px Inter, Arial';
+        ctx.fillText(invested, 650, 497);
+        ctx.fillText(pnl, 875, 497);
+
+        ctx.fillStyle = 'rgba(255,255,255,0.78)';
+        ctx.font = '600 24px Inter, Arial';
+        ctx.fillText('Current ' + current, 875, 535);
+        ctx.fillText(opened, 650, 592);
+
+        ctx.fillStyle = ${JSON.stringify(accent)};
+        ctx.font = '900 38px Inter, Arial';
+        ctx.fillText('ONCHAIN', 92, 120);
+        ctx.fillText('POSITION', 92, 166);
+        ctx.fillStyle = 'rgba(255,255,255,0.84)';
+        ctx.font = '600 24px Inter, Arial';
+        ctx.fillText('Autonomous exits. Scoped rules.', 92, 214);
+        ctx.fillText('Routed through Zerion.', 92, 248);
+      }
+    }]
+  }`;
+
+  return `https://quickchart.io/chart?width=1200&height=675&format=png&version=4&backgroundColor=transparent&c=${encodeURIComponent(config)}`;
 }
 
-async function replyPositionCard(ctx, { imageUrl, text, keyboard }) {
+async function replyPositionCard(ctx, { imageUrl, text, keyboard, editMessageId = null }) {
   try {
+    if (editMessageId) {
+      await ctx.telegram.editMessageMedia(
+        ctx.chat.id,
+        editMessageId,
+        undefined,
+        {
+          type: "photo",
+          media: imageUrl,
+          caption: text,
+          parse_mode: "Markdown",
+        },
+        keyboard,
+      );
+      return;
+    }
     await ctx.replyWithPhoto(imageUrl, {
       caption: text,
       parse_mode: "Markdown",
@@ -777,9 +884,19 @@ bot.action("refresh_positions", async (ctx) => {
   await ctx.answerCbQuery("Refreshing positions...");
   showPositions(ctx);
 });
+bot.action(/refresh_position_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery("Refreshing position...");
+  showPositions(ctx, {
+    singleMint: ctx.match[1],
+    editMessageId: ctx.callbackQuery?.message?.message_id,
+  });
+});
 
-async function showPositions(ctx) {
-  const positions = await loadPositions(ctx.from.id);
+async function showPositions(ctx, { singleMint = null, editMessageId = null } = {}) {
+  const allPositions = await loadPositions(ctx.from.id);
+  const positions = singleMint
+    ? allPositions.filter((position) => position.mint === singleMint)
+    : allPositions;
   if (!positions.length) {
     return ctx.reply(
       `📭 *No open positions.*\n\nPaste a contract address to open a trade.`,
@@ -871,10 +988,11 @@ async function showPositions(ctx) {
                 `autosell_${position.mint}`,
               ),
               Markup.button.callback("Custom %", `sell_custom_${position.mint}`),
-              Markup.button.callback("🔄 Refresh", "refresh_positions"),
+              Markup.button.callback("🔄 Refresh", `refresh_position_${position.mint}`),
             ],
           ]),
         },
+        editMessageId,
       });
     } catch (err) {
       console.error(
@@ -884,6 +1002,28 @@ async function showPositions(ctx) {
     }
   }
   if (!visiblePositions) {
+    if (singleMint && editMessageId) {
+      try {
+        await ctx.telegram.editMessageCaption(
+          ctx.chat.id,
+          editMessageId,
+          undefined,
+          `📭 *Position closed or dusted.*\n\n${removedDust ? "ZenGuard removed it from tracking." : "No live balance found."}`,
+          {
+            parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([
+              [
+                Markup.button.callback("⚡ Trade", "mode_trade"),
+                Markup.button.callback("📈 Positions", "view_positions"),
+              ],
+            ]),
+          },
+        );
+        return;
+      } catch (err) {
+        console.error("[bot] Position close edit failed:", err.message);
+      }
+    }
     return ctx.reply(
       `📭 *No open positions.*\n\n${removedDust ? `Removed ${removedDust} closed/dust position${removedDust === 1 ? "" : "s"} from tracking.\n\n` : ""}Paste a contract address to open a trade.`,
       {
@@ -897,6 +1037,7 @@ async function showPositions(ctx) {
       },
     );
   }
+  if (singleMint) return;
   const sign = totalPnL >= 0 ? "+" : "";
   await ctx.reply(`${removedDust ? `🧹 Removed ${removedDust} closed/dust position${removedDust === 1 ? "" : "s"}.\n\n` : ""}📊 *Portfolio PnL: ${sign}$${totalPnL.toFixed(4)}*`, {
     parse_mode: "Markdown",
