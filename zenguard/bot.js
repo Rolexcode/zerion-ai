@@ -105,6 +105,30 @@ function sizeSellAmount(amount, pct) {
   return Number((raw * 0.995).toPrecision(12));
 }
 
+function readableTradeError(err, { action = "trade", chain, symbol } = {}) {
+  const message = err?.message || String(err);
+  if (/not_enough_input_asset_balance|Input asset balance is not enough/i.test(message)) {
+    return (
+      `Not enough ${symbol ? `${symbol} ` : ""}balance to execute this ${action}.\n\n` +
+      `ZenGuard already sizes sells below your live balance, but this position may be too small, recently sold, or held below Zerion's executable minimum.\n\n` +
+      `Try *Sell 25%*, tap *Refresh*, or add a little ${chain === "solana" ? "SOL" : "ETH"} for fees.`
+    );
+  }
+  if (/swap cannot be performed/i.test(message)) {
+    return (
+      `Zerion could not route this ${chain === "solana" ? "Solana" : "EVM"} token right now.\n\n` +
+      `Try a more liquid token, reduce size, or try again later.`
+    );
+  }
+  if (/No executable swap transaction/i.test(message)) {
+    return (
+      `Zerion returned a quote, but no executable transaction.\n\n` +
+      `This usually means the balance is too low, liquidity is thin, or the route is temporarily unavailable.`
+    );
+  }
+  return message;
+}
+
 // ─── START ────────────────────────────────────────────────────────────────────
 
 bot.start((ctx) => {
@@ -616,8 +640,9 @@ bot.action("confirm_buy", async (ctx) => {
       txHash,
     });
     ctx.session.pendingBuyConfirm = null;
+    const buyPrice = Number(token.price);
     ctx.reply(
-      `✅ *Buy Executed*\n\nBought ${outputAmount ? "" : "~"}${formatTokenAmount(positionAmount)} *${token.symbol}*\nValue: *${formatUsd(positionValueUsd)}*\nSpent: ${amount} ${nativeCurrency}\nTx: ${formatTxLink(token.chain, txHash)}`,
+      `✅ *Buy Executed*\n\nToken: *${token.symbol}*\nChain: ${token.chain === "solana" ? "Solana" : token.chain.toUpperCase()}\nBought: ${outputAmount ? "" : "~"}${formatTokenAmount(positionAmount)} ${token.symbol}\nEntry Price: $${buyPrice.toFixed(8)}\nPosition Value: *${formatUsd(positionValueUsd)}*\nSpent: ${amount} ${nativeCurrency}\nTx: ${formatTxLink(token.chain, txHash)}`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
@@ -630,11 +655,11 @@ bot.action("confirm_buy", async (ctx) => {
     );
   } catch (err) {
     console.error("[bot] Buy failed:", err.message);
-    const hint =
-      token?.chain === "solana" && /swap cannot be performed/i.test(err.message)
-        ? "\n\nThis Solana token may not have a supported Zerion route yet. Try a more liquid token or test on Base."
-        : "";
-    ctx.reply(`⚠️ Buy failed: ${err.message}${hint}`);
+    ctx.reply(`⚠️ *Buy Failed*\n\n${readableTradeError(err, {
+      action: "buy",
+      chain: token?.chain,
+      symbol: token?.symbol,
+    })}`, { parse_mode: "Markdown" });
   }
 });
 
@@ -681,8 +706,10 @@ async function showPositions(ctx) {
       const arrow = roiPct >= 0 ? "📈" : "📉";
       const sign = roiPct >= 0 ? "+" : "";
       const chainLabel = position.chain === "solana" ? "🟣" : "🔵";
+      const chainName = position.chain === "solana" ? "Solana" : position.chain?.toUpperCase();
+      const openedAt = new Date(position.openedAt).toDateString();
       await ctx.reply(
-        `${arrow} *${position.symbol}* ${chainLabel}\n\nAmount: ${formatTokenAmount(position.amount)}\nValue: *${formatUsd(currentValue)}*\nEntry Value: ${formatUsd(entryValue)}\nEntry: $${Number(position.buyPrice).toFixed(8)}\nNow: $${Number(currentPrice).toFixed(8)}\nROI: *${sign}${roiPct.toFixed(2)}%* (${sign}${formatUsd(Math.abs(roiUSD))})\nOpened: ${new Date(position.openedAt).toDateString()}`,
+        `${arrow} *${position.symbol}* ${chainLabel}\n\nChain: ${chainName}\nToken Amount: ${formatTokenAmount(position.amount)} ${position.symbol}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Value: ${formatUsd(entryValue)}\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSell buttons use live wallet balance with a small safety buffer.`,
         {
           parse_mode: "Markdown",
           ...Markup.inlineKeyboard([
@@ -790,7 +817,7 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
   };
   const exitAsset = position.chain === "solana" ? "SOL" : "ETH";
   ctx.reply(
-    `⚠️ *Confirm Sell*\n\nSelling *${pct}%* of *${position.symbol}*\nAmount: ${formatTokenAmount(sellAmount)} tokens → ${exitAsset}\n\nEst. Value: *${formatUsd(sellValueUsd)}*\nCost Basis: ${formatUsd(costBasisUsd)}\nEst. PnL: *${formatSignedUsd(estimatedPnlUsd)}*\n\nConfirm?`,
+    `⚠️ *Confirm Sell*\n\nToken: *${position.symbol}*\nChain: ${position.chain === "solana" ? "Solana" : position.chain?.toUpperCase()}\nSelected: ${pct}%\nLive Balance: ${formatTokenAmount(sourceAmount)} ${position.symbol}\nSell Amount: ${formatTokenAmount(sellAmount)} ${position.symbol}\nExit Asset: ${exitAsset}\n\nEst. Value: *${formatUsd(sellValueUsd)}*\nCost Basis: ${formatUsd(costBasisUsd)}\nEst. PnL: *${formatSignedUsd(estimatedPnlUsd)}*\n\nZenGuard leaves a tiny dust buffer so real swaps do not fail from rounding.\n\nConfirm?`,
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
@@ -871,7 +898,19 @@ bot.action("confirm_sell", async (ctx) => {
     );
   } catch (err) {
     console.error("[bot] Sell failed:", err.message);
-    ctx.reply(`⚠️ Sell failed: ${err.message}`);
+    ctx.reply(`⚠️ *Sell Failed*\n\n${readableTradeError(err, {
+      action: "sell",
+      chain,
+      symbol,
+    })}`, {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("Sell 25%", `sell_pct_${mint}_25`),
+          Markup.button.callback("🔄 Refresh", "refresh_positions"),
+        ],
+      ]),
+    });
   }
 });
 
