@@ -105,6 +105,25 @@ function sizeSellAmount(amount, pct) {
   return Number((raw * 0.995).toPrecision(12));
 }
 
+function isDustPosition(amount, usdValue = null) {
+  const tokenAmount = Number(amount);
+  const value = Number(usdValue);
+  if (!Number.isFinite(tokenAmount) || tokenAmount <= 0) return true;
+  return Number.isFinite(value) && value > 0 && value < 0.01;
+}
+
+async function getLivePositionAmount(userId, position) {
+  if (position.chain === "solana") {
+    const encryptedKey = await loadEncryptedKey(userId, "solana");
+    if (!encryptedKey) return Number(position.amount);
+    return Number(await getSolanaTokenBalance(encryptedKey, position.mint));
+  }
+
+  const encryptedKey = await loadEncryptedKey(userId, "evm");
+  if (!encryptedKey) return Number(position.amount);
+  return Number(await getEVMTokenBalance(encryptedKey, position.chain, position.mint));
+}
+
 function readableTradeError(err, { action = "trade", chain, symbol } = {}) {
   const message = err?.message || String(err);
   if (/not_enough_input_asset_balance|Input asset balance is not enough/i.test(message)) {
@@ -547,24 +566,35 @@ async function handleTokenLookup(ctx, mint) {
       token.marketCap > 0
         ? `$${Number(token.marketCap).toLocaleString()}`
         : "N/A";
+    const volumeToLiquidity =
+      token.liquidity > 0
+        ? `${((Number(token.volume24h) / Number(token.liquidity)) * 100).toFixed(1)}%`
+        : "N/A";
     ctx.session ??= {};
     ctx.session.pendingBuy = { mint: token.address, token };
     ctx.session.awaitingBuyAmount = true;
     ctx.reply(
       `📊 *${token.name}* (${token.symbol})\n\n` +
+        `Contract: \`${token.address.slice(0, 8)}...${token.address.slice(-6)}\`\n` +
+        `Network: ${chainLabel}\n` +
+        `DEX: ${token.dex ?? "unknown"}\n` +
+        `Status: ${verified}\n\n` +
         `💲 Price: $${Number(token.price).toFixed(8)}\n` +
         `📈 24h Change: ${Number(token.change24h).toFixed(2)}%\n` +
         `💧 Liquidity: $${Number(token.liquidity).toLocaleString()}\n` +
         `📊 24h Volume: $${Number(token.volume24h).toLocaleString()}\n` +
+        `🔁 Vol/Liq: ${volumeToLiquidity}\n` +
         `🏦 Market Cap: ${mcap}\n` +
-        `🔗 Chain: ${chainLabel} (${token.dex})\n` +
-        `${verified}\n\n` +
-        `💬 How much *${token.nativeCurrency}* to spend?\n` +
-        `e.g. type *0.1* for 0.1 ${token.nativeCurrency}`,
+        `Native Asset: ${token.nativeCurrency}\n\n` +
+        `💬 How much *${token.nativeCurrency}* should ZenGuard spend?\n` +
+        `Example: type *0.1* for 0.1 ${token.nativeCurrency}`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
-          [Markup.button.callback("❌ Cancel", "cancel_buy")],
+          [
+            Markup.button.callback("🔄 Refresh Token", `refresh_token_${token.address}`),
+            Markup.button.callback("❌ Cancel", "cancel_buy"),
+          ],
         ]),
       },
     );
@@ -663,6 +693,11 @@ bot.action("confirm_buy", async (ctx) => {
   }
 });
 
+bot.action(/refresh_token_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery("Refreshing token...");
+  await handleTokenLookup(ctx, ctx.match[1]);
+});
+
 // ─── POSITIONS ────────────────────────────────────────────────────────────────
 
 bot.command("positions", async (ctx) => showPositions(ctx));
@@ -692,24 +727,45 @@ async function showPositions(ctx) {
     );
   }
   let totalPnL = 0;
+  let visiblePositions = 0;
+  let removedDust = 0;
   for (const position of positions) {
     try {
       const info = await getTokenInfo(position.mint);
       const currentPrice = info.price ?? position.buyPrice;
-      const tokenAmount = parseFloat(position.amount);
+      let tokenAmount = parseFloat(position.amount);
+      try {
+        const liveAmount = await getLivePositionAmount(ctx.from.id, position);
+        if (Number.isFinite(liveAmount)) tokenAmount = liveAmount;
+      } catch (err) {
+        console.error(`[bot] Live position balance failed for ${position.symbol}:`, err.message);
+      }
       const currentValue = currentPrice * tokenAmount;
+      if (isDustPosition(tokenAmount, currentValue)) {
+        await removePosition(ctx.from.id, position.mint);
+        removedDust += 1;
+        continue;
+      }
+      if (String(tokenAmount) !== String(position.amount)) {
+        await savePosition(ctx.from.id, {
+          ...position,
+          amount: tokenAmount.toPrecision(12),
+          lastRefreshedAt: new Date().toISOString(),
+        });
+      }
       const entryValue = position.entryValueUsd ?? position.buyPrice * tokenAmount;
       const roiPct =
         ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
       const roiUSD = currentValue - entryValue;
       totalPnL += roiUSD;
+      visiblePositions += 1;
       const arrow = roiPct >= 0 ? "📈" : "📉";
       const sign = roiPct >= 0 ? "+" : "";
       const chainLabel = position.chain === "solana" ? "🟣" : "🔵";
       const chainName = position.chain === "solana" ? "Solana" : position.chain?.toUpperCase();
       const openedAt = new Date(position.openedAt).toDateString();
       await ctx.reply(
-        `${arrow} *${position.symbol}* ${chainLabel}\n\nChain: ${chainName}\nToken Amount: ${formatTokenAmount(position.amount)} ${position.symbol}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Value: ${formatUsd(entryValue)}\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSell buttons use live wallet balance with a small safety buffer.`,
+        `${arrow} *${position.symbol}* ${chainLabel}\n\nChain: ${chainName}\nLive Amount: ${formatTokenAmount(tokenAmount)} ${position.symbol}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Value: ${formatUsd(entryValue)}\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSynced from wallet balance. Sell buttons use a small safety buffer.`,
         {
           parse_mode: "Markdown",
           ...Markup.inlineKeyboard([
@@ -744,8 +800,22 @@ async function showPositions(ctx) {
       );
     }
   }
+  if (!visiblePositions) {
+    return ctx.reply(
+      `📭 *No open positions.*\n\n${removedDust ? `Removed ${removedDust} closed/dust position${removedDust === 1 ? "" : "s"} from tracking.\n\n` : ""}Paste a contract address to open a trade.`,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback("⚡ Quick Trade", "mode_trade"),
+            Markup.button.callback("🔄 Refresh", "refresh_positions"),
+          ],
+        ]),
+      },
+    );
+  }
   const sign = totalPnL >= 0 ? "+" : "";
-  await ctx.reply(`📊 *Portfolio PnL: ${sign}$${totalPnL.toFixed(4)}*`, {
+  await ctx.reply(`${removedDust ? `🧹 Removed ${removedDust} closed/dust position${removedDust === 1 ? "" : "s"}.\n\n` : ""}📊 *Portfolio PnL: ${sign}$${totalPnL.toFixed(4)}*`, {
     parse_mode: "Markdown",
     ...Markup.inlineKeyboard([
       [
@@ -1183,6 +1253,7 @@ bot.on("text", async (ctx) => {
     ctx.session.awaitingBuyAmount = false;
     const estimatedTokens = (amount / token.price).toFixed(4);
     const nativeCurrency = token.nativeCurrency ?? "SOL";
+    const price = Number(token.price);
     ctx.session.pendingBuyConfirm = {
       mint,
       token,
@@ -1191,7 +1262,7 @@ bot.on("text", async (ctx) => {
       nativeCurrency,
     };
     ctx.reply(
-      `⚠️ *Confirm Buy*\n\nToken: *${token.symbol}*\nSpending: *${amount} ${nativeCurrency}*\nPrice: $${Number(token.price).toFixed(8)}\n\nConfirm?`,
+      `⚠️ *Confirm Buy*\n\nToken: *${token.symbol}*\nChain: ${token.chain === "solana" ? "Solana" : token.chain.toUpperCase()}\nSpending: *${amount} ${nativeCurrency}*\nPrice: $${price.toFixed(8)}\nEst. Tokens: ~${formatTokenAmount(estimatedTokens)} ${token.symbol}\nSlippage: 2%\nRoute: Zerion\n\nFinal amount comes from the onchain swap receipt after execution.\n\nConfirm?`,
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([

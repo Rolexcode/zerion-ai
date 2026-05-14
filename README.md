@@ -22,7 +22,7 @@ ZenGuard has executed a real Base mainnet swap through the full bot flow.
 | Action | ETH → VIRTUAL |
 | Paid | 0.0006 ETH |
 | Received | 1.662036 VIRTUAL |
-| Transaction | `0x312b64bb97e40d9ef4bea5b54b383f840e8cc427988e286da1cca460539fd17d` |
+| Transaction | `312b64bb97e40d9ef4bea5b54b383f840e8cc427988e286da1cca460539fd17d` |
 | Wallet | `0xa7dD55EDE00dEC31e44AFFd404f1Ddcb1E8FB106` |
 | Route | Zerion CLI quote → signed by user wallet → broadcast onchain |
 
