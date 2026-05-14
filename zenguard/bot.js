@@ -1,5 +1,6 @@
 import "dotenv/config";
 import http from "http";
+import sharp from "sharp";
 import { Telegraf, session, Markup, Input } from "telegraf";
 import { scheduleMonitoring, stopMonitoring } from "./monitor.js";
 import { getPortfolio, getPositions } from "./utils.js";
@@ -184,7 +185,22 @@ function readableTradeError(err, { action = "trade", chain, symbol } = {}) {
   return message;
 }
 
-function buildPnlChartConfig({
+function escapeXml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function shortenMiddle(value, head = 10, tail = 8) {
+  const text = String(value ?? "");
+  if (text.length <= head + tail + 3) return text;
+  return `${text.slice(0, head)}...${text.slice(-tail)}`;
+}
+
+function buildPnlCardSvg({
   isProfit,
   symbol,
   pair,
@@ -195,154 +211,89 @@ function buildPnlChartConfig({
   roiUSD,
   openedAt,
   duration,
+  wallet,
 }) {
-  const accent = isProfit ? "#4DFF88" : "#FF5D73";
-  const accentSoft = isProfit ? "rgba(77,255,136,0.15)" : "rgba(255,93,115,0.16)";
+  const accent = isProfit ? "#00ff88" : "#ff4d6d";
+  const accentDim = isProfit ? "#0d7a45" : "#8d1f34";
+  const bgMid = isProfit ? "#082b1c" : "#321018";
   const roiText = `${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}%`;
-  const gainLabel = isProfit ? "CURRENT GAIN" : "CURRENT LOSS";
   const pnlText = `${roiUSD >= 0 ? "+" : "-"}${formatUsd(Math.abs(roiUSD))}`;
-  const config = `{
-    type: 'bar',
-    data: { labels: [''], datasets: [{ data: [0], backgroundColor: 'rgba(0,0,0,0)' }] },
-    options: {
-      responsive: false,
-      animation: false,
-      events: [],
-      plugins: { legend: { display: false }, tooltip: { enabled: false } },
-      scales: { x: { display: false }, y: { display: false } }
-    },
-    plugins: [{
-      id: 'zenguard-card',
-      beforeDraw: function(chart) {
-        const ctx = chart.ctx;
-        const w = chart.width;
-        const h = chart.height;
-        const pair = ${JSON.stringify(pair ?? `${symbol}/${chainName}`)};
-        const roi = ${JSON.stringify(roiText)};
-        const duration = ${JSON.stringify(duration)};
-        const invested = ${JSON.stringify(formatUsd(entryValue))};
-        const current = ${JSON.stringify(formatUsd(currentValue))};
-        const pnl = ${JSON.stringify(pnlText)};
-        const opened = ${JSON.stringify(openedAt)};
-        const gainLabel = ${JSON.stringify(gainLabel)};
+  const gainLabel = isProfit ? "CURRENT GAIN" : "CURRENT LOSS";
+  const progress = Math.max(8, Math.min(100, Math.abs(roiPct) / 3));
 
-        const grad = ctx.createLinearGradient(0, 0, w, h);
-        grad.addColorStop(0, '#041B38');
-        grad.addColorStop(0.55, '#06111F');
-        grad.addColorStop(1, '#020711');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, w, h);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="675" viewBox="0 0 1200 675" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#050b18"/>
+      <stop offset="52%" stop-color="${bgMid}"/>
+      <stop offset="100%" stop-color="#02050c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="82%" cy="18%" r="70%">
+      <stop offset="0%" stop-color="${accent}" stop-opacity="0.24"/>
+      <stop offset="58%" stop-color="${accent}" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="${accent}" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="72" height="72" patternUnits="userSpaceOnUse">
+      <path d="M 72 0 L 0 0 0 72" fill="none" stroke="${accent}" stroke-opacity="0.075" stroke-width="1"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="24" stdDeviation="32" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
 
-        ctx.fillStyle = ${JSON.stringify(accentSoft)};
-        ctx.beginPath();
-        ctx.moveTo(0, h);
-        ctx.lineTo(w * 0.42, 0);
-        ctx.lineTo(w * 0.58, 0);
-        ctx.lineTo(w * 0.18, h);
-        ctx.closePath();
-        ctx.fill();
+  <rect width="1200" height="675" rx="42" fill="url(#bg)"/>
+  <rect width="1200" height="675" rx="42" fill="url(#grid)"/>
+  <rect width="1200" height="675" rx="42" fill="url(#glow)"/>
+  <path d="M0 675 L430 0 L575 0 L190 675 Z" fill="${accent}" opacity="0.08"/>
+  <path d="M500 0 L185 675" stroke="#ffffff" stroke-opacity="0.16" stroke-width="3"/>
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.22)';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(w * 0.45, 0);
-        ctx.lineTo(w * 0.18, h);
-        ctx.stroke();
+  <g filter="url(#shadow)">
+    <rect x="72" y="58" width="1056" height="559" rx="34" fill="#07111f" opacity="0.76" stroke="#ffffff" stroke-opacity="0.08"/>
+  </g>
 
-        ctx.fillStyle = 'rgba(255,255,255,0.08)';
-        for (let i = 0; i < 7; i++) {
-          const x = 70 + i * 140;
-          const y = 560 - (i % 3) * 58;
-          ctx.fillRect(x, y, 54, 120);
-        }
+  <g transform="translate(108 92)">
+    <rect width="54" height="54" rx="15" fill="${accent}" opacity="0.16" stroke="${accent}" stroke-opacity="0.42"/>
+    <text x="27" y="36" text-anchor="middle" font-family="Arial, sans-serif" font-size="26" fill="${accent}">Z</text>
+    <text x="76" y="23" font-family="Arial, sans-serif" font-size="27" font-weight="800" letter-spacing="2" fill="#f2f8ff">ZENGUARD</text>
+    <text x="78" y="50" font-family="Arial, sans-serif" font-size="14" font-weight="600" letter-spacing="4" fill="#90a4bd">ONCHAIN BODYGUARD</text>
+  </g>
 
-        ctx.fillStyle = '#EAF4FF';
-        ctx.font = '700 34px Inter, Arial';
-        ctx.fillText('ZENGUARD', 760, 78);
-        ctx.font = '500 20px Inter, Arial';
-        ctx.fillStyle = 'rgba(234,244,255,0.72)';
-        ctx.fillText('by RolextheExplorer', 760, 108);
+  <g transform="translate(931 96)">
+    <rect width="132" height="42" rx="13" fill="#ffffff" opacity="0.06" stroke="#ffffff" stroke-opacity="0.12"/>
+    <text x="66" y="27" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" font-weight="800" letter-spacing="2" fill="#c7d7eb">${escapeXml(chainName)}</text>
+  </g>
 
-        ctx.textAlign = 'left';
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = '800 52px Inter, Arial';
-        ctx.fillText(pair, 650, 210);
+  <text x="108" y="210" font-family="Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="7" fill="#91a3bb">${escapeXml(pair ?? `${symbol}/${chainName}`)}</text>
+  <text x="108" y="335" font-family="Arial Black, Arial, sans-serif" font-size="104" font-weight="900" fill="${accent}">${escapeXml(roiText)}</text>
+  <text x="112" y="382" font-family="Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="3" fill="#9daec3">HELD ${escapeXml(duration)}</text>
 
-        ctx.fillStyle = ${JSON.stringify(accent)};
-        ctx.font = '900 96px Inter, Arial';
-        ctx.fillText(roi, 650, 320);
+  <line x1="108" y1="430" x2="1092" y2="430" stroke="${accent}" stroke-opacity="0.22" stroke-width="2"/>
 
-        ctx.fillStyle = 'rgba(255,255,255,0.82)';
-        ctx.font = '600 26px Inter, Arial';
-        ctx.fillText('Held ' + duration, 650, 365);
+  <text x="108" y="480" font-family="Arial, sans-serif" font-size="17" font-weight="800" letter-spacing="4" fill="#90a4bd">INVESTED</text>
+  <text x="108" y="522" font-family="Arial, sans-serif" font-size="34" font-weight="900" fill="#ffffff">${escapeXml(formatUsd(entryValue))}</text>
 
-        ctx.fillStyle = 'rgba(255,255,255,0.62)';
-        ctx.font = '700 22px Inter, Arial';
-        ctx.fillText('INVESTED', 650, 455);
-        ctx.fillText(gainLabel, 875, 455);
-        ctx.fillText('OPENED', 650, 555);
+  <text x="504" y="480" font-family="Arial, sans-serif" font-size="17" font-weight="800" letter-spacing="4" fill="${accent}">${escapeXml(gainLabel)}</text>
+  <text x="504" y="522" font-family="Arial, sans-serif" font-size="34" font-weight="900" fill="${accent}">${escapeXml(pnlText)}</text>
+  <text x="504" y="553" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#a8b8cb">Current ${escapeXml(formatUsd(currentValue))}</text>
 
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = '800 34px Inter, Arial';
-        ctx.fillText(invested, 650, 497);
-        ctx.fillText(pnl, 875, 497);
+  <text x="806" y="480" font-family="Arial, sans-serif" font-size="17" font-weight="800" letter-spacing="4" fill="#90a4bd">OPENED</text>
+  <text x="806" y="522" font-family="Arial, sans-serif" font-size="28" font-weight="800" fill="#ffffff">${escapeXml(openedAt)}</text>
 
-        ctx.fillStyle = 'rgba(255,255,255,0.78)';
-        ctx.font = '600 24px Inter, Arial';
-        ctx.fillText('Current ' + current, 875, 535);
-        ctx.fillText(opened, 650, 592);
+  <rect x="108" y="580" width="600" height="8" rx="4" fill="#ffffff" opacity="0.08"/>
+  <rect x="108" y="580" width="${6 * progress}" height="8" rx="4" fill="${accent}"/>
 
-        ctx.fillStyle = ${JSON.stringify(accent)};
-        ctx.font = '900 38px Inter, Arial';
-        ctx.fillText('ONCHAIN', 92, 120);
-        ctx.fillText('POSITION', 92, 166);
-        ctx.fillStyle = 'rgba(255,255,255,0.84)';
-        ctx.font = '600 24px Inter, Arial';
-        ctx.fillText('Autonomous exits. Scoped rules.', 92, 214);
-        ctx.fillText('Routed through Zerion.', 92, 248);
-      }
-    }]
-  }`;
-
-  return config;
+  <text x="108" y="626" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#60748d">${escapeXml(shortenMiddle(wallet ?? "ZenGuard wallet", 14, 10))}</text>
+  <rect x="852" y="597" width="240" height="34" rx="10" fill="${accentDim}" opacity="0.26" stroke="${accent}" stroke-opacity="0.22"/>
+  <text x="972" y="620" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" font-weight="800" fill="${accent}">by RolextheExplorer</text>
+</svg>`;
 }
 
 async function buildPnlImageFile(positionData) {
-  const config = buildPnlChartConfig(positionData);
-
   try {
-    const response = await fetch("https://quickchart.io/chart", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chart: config,
-        width: 1200,
-        height: 675,
-        format: "png",
-        version: "4",
-        backgroundColor: "transparent",
-      }),
-    });
-
-    const bytes = Buffer.from(await response.arrayBuffer());
-    const contentType = response.headers.get("content-type") || "";
-    const isPng =
-      bytes.length > 8 &&
-      bytes[0] === 0x89 &&
-      bytes[1] === 0x50 &&
-      bytes[2] === 0x4e &&
-      bytes[3] === 0x47;
-
-    if (contentType.includes("image/") || isPng) {
-      return Input.fromBuffer(bytes, "zenguard-pnl.png");
-    }
-
-    const detail = bytes.toString("utf8", 0, Math.min(bytes.length, 240));
-    if (!response.ok) {
-      throw new Error(`QuickChart ${response.status}: ${detail.slice(0, 160)}`);
-    }
-
-    throw new Error(`QuickChart returned ${contentType || "unknown content"}: ${detail.slice(0, 160)}`);
+    const svg = buildPnlCardSvg(positionData);
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    return Input.fromBuffer(png, "zenguard-pnl.png");
   } catch (err) {
     console.error("[bot] PnL image render failed:", err.message);
     return null;
@@ -1060,6 +1011,7 @@ bot.action(/generate_pnl_(.+)/, async (ctx) => {
         roiUSD,
         openedAt,
         duration,
+        wallet: ctx.from?.username ? `@${ctx.from.username}` : String(ctx.from.id),
       }),
       10000,
       "PnL image render",
