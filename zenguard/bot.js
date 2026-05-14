@@ -1,6 +1,6 @@
 import "dotenv/config";
 import http from "http";
-import { Telegraf, session, Markup } from "telegraf";
+import { Telegraf, session, Markup, Input } from "telegraf";
 import { scheduleMonitoring, stopMonitoring } from "./monitor.js";
 import { getPortfolio, getPositions } from "./utils.js";
 import {
@@ -292,12 +292,11 @@ function buildPnlChartConfig({
   return config;
 }
 
-async function buildPnlImageUrl(positionData) {
+async function buildPnlImageFile(positionData) {
   const config = buildPnlChartConfig(positionData);
-  const longUrl = `https://quickchart.io/chart?width=1200&height=675&format=png&version=4&backgroundColor=transparent&c=${encodeURIComponent(config)}`;
 
   try {
-    const response = await fetch("https://quickchart.io/chart/create", {
+    const response = await fetch("https://quickchart.io/chart", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -309,16 +308,28 @@ async function buildPnlImageUrl(positionData) {
         backgroundColor: "transparent",
       }),
     });
-    const payload = await response.json();
-    return payload.url || payload.shortUrl || longUrl;
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`QuickChart ${response.status}: ${detail.slice(0, 160)}`);
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("image/")) {
+      const detail = await response.text();
+      throw new Error(`QuickChart returned ${contentType || "unknown content"}: ${detail.slice(0, 160)}`);
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    return Input.fromBuffer(bytes, "zenguard-pnl.png");
   } catch (err) {
-    console.error("[bot] PnL short image URL failed:", err.message);
-    return longUrl;
+    console.error("[bot] PnL image render failed:", err.message);
+    return null;
   }
 }
 
-async function replyPositionCard(ctx, { imageUrl, text, keyboard, editMessageId = null }) {
-  if (editMessageId) {
+async function replyPositionCard(ctx, { imageFile, text, keyboard, editMessageId = null }) {
+  if (editMessageId && imageFile) {
     try {
       await ctx.telegram.editMessageMedia(
         ctx.chat.id,
@@ -326,7 +337,7 @@ async function replyPositionCard(ctx, { imageUrl, text, keyboard, editMessageId 
         undefined,
         {
           type: "photo",
-          media: imageUrl,
+          media: imageFile,
           caption: text,
           parse_mode: "Markdown",
         },
@@ -342,24 +353,45 @@ async function replyPositionCard(ctx, { imageUrl, text, keyboard, editMessageId 
         });
         return { message_id: editMessageId };
       } catch (textErr) {
+        if (/message is not modified/i.test(textErr.message)) {
+          return { message_id: editMessageId };
+        }
         console.error("[bot] Position text edit failed:", textErr.message);
       }
     }
   }
 
+  if (editMessageId && !imageFile) {
+    try {
+      await ctx.telegram.editMessageText(ctx.chat.id, editMessageId, undefined, text, {
+        parse_mode: "Markdown",
+        ...keyboard,
+      });
+      return { message_id: editMessageId };
+    } catch (textErr) {
+      if (/message is not modified/i.test(textErr.message)) {
+        return { message_id: editMessageId };
+      }
+      console.error("[bot] Position text edit failed:", textErr.message);
+    }
+  }
+
   try {
-    return await ctx.replyWithPhoto(imageUrl, {
-      caption: text,
-      parse_mode: "Markdown",
-      ...keyboard,
-    });
+    if (imageFile) {
+      return await ctx.replyWithPhoto(imageFile, {
+        caption: text,
+        parse_mode: "Markdown",
+        ...keyboard,
+      });
+    }
   } catch (err) {
     console.error("[bot] PnL image send failed:", err.message);
-    return await ctx.reply(text, {
-      parse_mode: "Markdown",
-      ...keyboard,
-    });
   }
+
+  return await ctx.reply(text, {
+    parse_mode: "Markdown",
+    ...keyboard,
+  });
 }
 
 async function clearPreviousPositionMessages(ctx) {
@@ -1024,7 +1056,7 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null, rep
       const pair = getPositionPair(position);
       const positionText = `${arrow} *${pair}* ${chainLabel}\n\nChain: ${chainName}\nHeld: ${duration}\nLive Amount: ${formatTokenAmount(tokenAmount)} ${position.symbol}\nInvested: ${formatUsd(entryValue)}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSynced from wallet balance. Sell buttons use a small safety buffer.`;
       const positionMessage = await replyPositionCard(ctx, {
-        imageUrl: await buildPnlImageUrl({
+        imageFile: await buildPnlImageFile({
           isProfit: roiUSD >= 0,
           symbol: position.symbol,
           pair,
