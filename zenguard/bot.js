@@ -102,7 +102,8 @@ function formatTxLink(chain, hash) {
 function sizeSellAmount(amount, pct) {
   const raw = (Number(amount) * Number(pct)) / 100;
   if (!Number.isFinite(raw) || raw <= 0) return 0;
-  return Number((raw * 0.995).toPrecision(12));
+  const buffer = Number(pct) >= 100 ? 0.999 : 0.995;
+  return Number((raw * buffer).toPrecision(12));
 }
 
 function isDustPosition(amount, usdValue = null) {
@@ -788,6 +789,7 @@ async function showPositions(ctx) {
                 "🛡️ Auto-Sell",
                 `autosell_${position.mint}`,
               ),
+              Markup.button.callback("Custom %", `sell_custom_${position.mint}`),
               Markup.button.callback("🔄 Refresh", "refresh_positions"),
             ],
           ]),
@@ -830,10 +832,11 @@ async function showPositions(ctx) {
 
 bot.command("sell", async (ctx) => showPositions(ctx));
 
-bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const mint = ctx.match[1];
-  const pct = parseInt(ctx.match[2]);
+async function prepareSell(ctx, mint, pct) {
+  const sellPct = Number(pct);
+  if (!Number.isFinite(sellPct) || sellPct <= 0 || sellPct > 100) {
+    return ctx.reply("⚠️ Enter a sell percentage from 1 to 100.");
+  }
   const positions = await loadPositions(ctx.from.id);
   const position = positions.find((p) => p.mint === mint);
   if (!position) return ctx.reply("Position not found.");
@@ -853,7 +856,7 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
       console.error("[bot] Live balance fetch failed:", err.message);
     }
   }
-  const sellAmount = sizeSellAmount(sourceAmount, pct);
+  const sellAmount = sizeSellAmount(sourceAmount, sellPct);
   if (!Number.isFinite(sellAmount) || sellAmount <= 0) {
     return ctx.reply("No sellable token balance found for this position.");
   }
@@ -875,7 +878,7 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
   ctx.session ??= {};
   ctx.session.pendingSell = {
     mint,
-    pct,
+    pct: sellPct,
     sellAmount,
     symbol: position.symbol,
     originalAmount: sourceAmount,
@@ -886,8 +889,9 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
     currentPrice,
   };
   const exitAsset = position.chain === "solana" ? "SOL" : "ETH";
+  const bufferNote = sellPct >= 100 ? "100% sells request 99.9% so tiny dust is left instead of failing from rounding." : "ZenGuard leaves a tiny dust buffer so real swaps do not fail from rounding.";
   ctx.reply(
-    `⚠️ *Confirm Sell*\n\nToken: *${position.symbol}*\nChain: ${position.chain === "solana" ? "Solana" : position.chain?.toUpperCase()}\nSelected: ${pct}%\nLive Balance: ${formatTokenAmount(sourceAmount)} ${position.symbol}\nSell Amount: ${formatTokenAmount(sellAmount)} ${position.symbol}\nExit Asset: ${exitAsset}\n\nEst. Value: *${formatUsd(sellValueUsd)}*\nCost Basis: ${formatUsd(costBasisUsd)}\nEst. PnL: *${formatSignedUsd(estimatedPnlUsd)}*\n\nZenGuard leaves a tiny dust buffer so real swaps do not fail from rounding.\n\nConfirm?`,
+    `⚠️ *Confirm Sell*\n\nToken: *${position.symbol}*\nChain: ${position.chain === "solana" ? "Solana" : position.chain?.toUpperCase()}\nSelected: ${sellPct}%\nLive Balance: ${formatTokenAmount(sourceAmount)} ${position.symbol}\nSell Amount: ${formatTokenAmount(sellAmount)} ${position.symbol}\nExit Asset: ${exitAsset}\n\nEst. Value: *${formatUsd(sellValueUsd)}*\nCost Basis: ${formatUsd(costBasisUsd)}\nEst. PnL: *${formatSignedUsd(estimatedPnlUsd)}*\n\n${bufferNote}\n\nConfirm?`,
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
@@ -897,6 +901,28 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
         ],
       ]),
     },
+  );
+}
+
+bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  return prepareSell(ctx, ctx.match[1], ctx.match[2]);
+});
+
+bot.action(/sell_custom_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const mint = ctx.match[1];
+  const positions = await loadPositions(ctx.from.id);
+  const position = positions.find((p) => p.mint === mint);
+  if (!position) return ctx.reply("Position not found.");
+  ctx.session ??= {};
+  ctx.session.awaitingCustomSell = {
+    mint,
+    symbol: position.symbol,
+  };
+  ctx.reply(
+    `🎚️ *Custom Sell Percentage*\n\nToken: *${position.symbol}*\n\nEnter the percentage to sell.\nExample: *12.5* sells 12.5%.\n\nUse *100* to sell almost all (99.9%) and leave tiny dust.`,
+    { parse_mode: "Markdown" },
   );
 });
 
@@ -1130,11 +1156,26 @@ bot.on("text", async (ctx) => {
   const text = ctx.message.text.trim();
   if (text.startsWith("/")) return;
 
+  if (ctx.session.awaitingCustomSell) {
+    const pct = Number(text);
+    const { mint, symbol } = ctx.session.awaitingCustomSell;
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+      return ctx.reply("⚠️ Enter a percentage from 1 to 100. Example: 12.5");
+    }
+    ctx.session.awaitingCustomSell = null;
+    await ctx.reply(`Preparing custom sell for *${symbol}* at *${pct}%*...`, {
+      parse_mode: "Markdown",
+    });
+    await prepareSell(ctx, mint, pct);
+    return;
+  }
+
   // Auto-detect contract address
   if (
     !ctx.session.awaitingPrivateKey &&
     !ctx.session.awaitingWatchAddress &&
     !ctx.session.awaitingBuyAmount &&
+    !ctx.session.awaitingCustomSell &&
     !ctx.session.awaitingThreshold &&
     !ctx.session.awaitingAutoSell &&
     isContractAddress(text)
