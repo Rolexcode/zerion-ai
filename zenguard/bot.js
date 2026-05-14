@@ -292,11 +292,29 @@ function buildPnlCardSvg({
 async function buildPnlImageFile(positionData) {
   try {
     const svg = buildPnlCardSvg(positionData);
-    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const png = await sharp(Buffer.from(svg))
+      .png({ compressionLevel: 9, palette: true })
+      .toBuffer();
     return Input.fromBuffer(png, "zenguard-pnl.png");
   } catch (err) {
     console.error("[bot] PnL image render failed:", err.message);
     return null;
+  }
+}
+
+async function replyWithPhotoFallback(ctx, imageFile, text, keyboard) {
+  try {
+    return await ctx.replyWithPhoto(imageFile, {
+      caption: text,
+      parse_mode: "Markdown",
+      ...keyboard,
+    });
+  } catch (err) {
+    console.error("[bot] Photo send failed, falling back to text:", err.message);
+    return await ctx.reply(text, {
+      parse_mode: "Markdown",
+      ...keyboard,
+    });
   }
 }
 
@@ -350,11 +368,7 @@ async function replyPositionCard(ctx, { imageFile, text, keyboard, editMessageId
 
   try {
     if (imageFile) {
-      return await ctx.replyWithPhoto(imageFile, {
-        caption: text,
-        parse_mode: "Markdown",
-        ...keyboard,
-      });
+      return await replyWithPhotoFallback(ctx, imageFile, text, keyboard);
     }
   } catch (err) {
     console.error("[bot] PnL image send failed:", err.message);
@@ -942,15 +956,15 @@ bot.action(/refresh_token_(.+)/, async (ctx) => {
 bot.command("positions", async (ctx) => showPositions(ctx));
 bot.action("view_positions", async (ctx) => {
   await ctx.answerCbQuery();
-  showPositions(ctx);
+  await showPositions(ctx);
 });
 bot.action("refresh_positions", async (ctx) => {
   await ctx.answerCbQuery("Refreshing positions...");
-  showPositions(ctx, { replaceList: true });
+  await showPositions(ctx, { replaceList: true });
 });
 bot.action(/refresh_position_(.+)/, async (ctx) => {
   await ctx.answerCbQuery("Refreshing position...");
-  showPositions(ctx, {
+  await showPositions(ctx, {
     singleMint: ctx.match[1],
     editMessageId: ctx.callbackQuery?.message?.message_id,
   });
@@ -970,15 +984,17 @@ bot.action(/generate_pnl_(.+)/, async (ctx) => {
     const info = await getTokenInfo(position.mint);
     const currentPrice = info.price ?? position.buyPrice;
     let tokenAmount = parseFloat(position.amount);
-    try {
-      const liveAmount = await withTimeout(
-        getLivePositionAmount(ctx.from.id, position),
-        LIVE_BALANCE_TIMEOUT_MS,
-        "Live position balance",
-      );
-      if (Number.isFinite(liveAmount)) tokenAmount = liveAmount;
-    } catch (err) {
-      console.error(`[bot] PnL card live balance failed for ${position.symbol}:`, err.message);
+    if (position.chain !== "solana") {
+      try {
+        const liveAmount = await withTimeout(
+          getLivePositionAmount(ctx.from.id, position),
+          LIVE_BALANCE_TIMEOUT_MS,
+          "Live position balance",
+        );
+        if (Number.isFinite(liveAmount)) tokenAmount = liveAmount;
+      } catch (err) {
+        console.error(`[bot] PnL card live balance failed for ${position.symbol}:`, err.message);
+      }
     }
 
     const currentValue = currentPrice * tokenAmount;
@@ -1018,7 +1034,7 @@ bot.action(/generate_pnl_(.+)/, async (ctx) => {
     );
 
     if (!imageFile) {
-      return ctx.reply(`PnL card could not be generated right now.\n\n${caption}`, {
+      return await ctx.reply(`PnL card could not be generated right now.\n\n${caption}`, {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Refresh Position", `refresh_position_${position.mint}`)],
@@ -1026,9 +1042,7 @@ bot.action(/generate_pnl_(.+)/, async (ctx) => {
       });
     }
 
-    return ctx.replyWithPhoto(imageFile, {
-      caption,
-      parse_mode: "Markdown",
+    return await replyWithPhotoFallback(ctx, imageFile, caption, {
       ...Markup.inlineKeyboard([
         [
           Markup.button.callback("🔄 Refresh Position", `refresh_position_${position.mint}`),
@@ -1038,7 +1052,7 @@ bot.action(/generate_pnl_(.+)/, async (ctx) => {
     });
   } catch (err) {
     console.error("[bot] PnL card failed:", err.message);
-    return ctx.reply(
+    return await ctx.reply(
       `Could not generate the PnL card right now.\n\n${err.message}`,
       {
         ...Markup.inlineKeyboard([
