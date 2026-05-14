@@ -46,11 +46,6 @@ if (!process.env.TELEGRAM_BOT_TOKEN) {
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 bot.use(session());
 
-const PNL_IMAGES = {
-  profit: "https://placehold.co/900x360/0f3b2e/eafff4.png?text=ZenGuard+Profit+Position",
-  loss: "https://placehold.co/900x360/4a1218/fff1f2.png?text=ZenGuard+Loss+Position",
-};
-
 function normalizeSwapResult(result) {
   if (typeof result === "string") {
     return { hash: result, outputAmount: null };
@@ -154,9 +149,34 @@ function readableTradeError(err, { action = "trade", chain, symbol } = {}) {
   return message;
 }
 
-async function replyPositionCard(ctx, { isProfit, text, keyboard }) {
+function buildPnlImageUrl({
+  isProfit,
+  symbol,
+  chainName,
+  currentValue,
+  entryValue,
+  roiPct,
+  roiUSD,
+  openedAt,
+}) {
+  const bg = isProfit ? "0f3b2e" : "4a1218";
+  const fg = isProfit ? "eafff4" : "fff1f2";
+  const title = isProfit ? "PROFIT POSITION" : "LOSS POSITION";
+  const sign = roiUSD >= 0 ? "+" : "-";
+  const lines = [
+    `ZenGuard ${title}`,
+    `${symbol} on ${chainName}`,
+    `Value ${formatUsd(currentValue)} | Entry ${formatUsd(entryValue)}`,
+    `PnL ${sign}${formatUsd(Math.abs(roiUSD))} | ROI ${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}%`,
+    `Opened ${openedAt}`,
+  ];
+
+  return `https://placehold.co/1100x560/${bg}/${fg}.png?font=montserrat&text=${encodeURIComponent(lines.join("\n"))}`;
+}
+
+async function replyPositionCard(ctx, { imageUrl, text, keyboard }) {
   try {
-    await ctx.replyWithPhoto(isProfit ? PNL_IMAGES.profit : PNL_IMAGES.loss, {
+    await ctx.replyWithPhoto(imageUrl, {
       caption: text,
       parse_mode: "Markdown",
       ...keyboard,
@@ -788,7 +808,16 @@ async function showPositions(ctx) {
       const openedAt = new Date(position.openedAt).toDateString();
       const positionText = `${arrow} *${position.symbol}* ${chainLabel}\n\nChain: ${chainName}\nLive Amount: ${formatTokenAmount(tokenAmount)} ${position.symbol}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Value: ${formatUsd(entryValue)}\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSynced from wallet balance. Sell buttons use a small safety buffer.`;
       await replyPositionCard(ctx, {
-        isProfit: roiUSD >= 0,
+        imageUrl: buildPnlImageUrl({
+          isProfit: roiUSD >= 0,
+          symbol: position.symbol,
+          chainName,
+          currentValue,
+          entryValue,
+          roiPct,
+          roiUSD,
+          openedAt,
+        }),
         text: positionText,
         keyboard: {
           ...Markup.inlineKeyboard([
