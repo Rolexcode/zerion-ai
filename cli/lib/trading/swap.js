@@ -14,6 +14,27 @@ import { getConfigValue } from "../config.js";
 import { NATIVE_ASSET_ADDRESS, DEFAULT_SLIPPAGE } from "../util/constants.js";
 import { enforceExecutablePolicies } from "./guards.js";
 
+function getSwapTransaction(attributes = {}) {
+  return attributes.transaction_swap?.evm ?? attributes.transaction_swap?.solana ?? null;
+}
+
+function getOfferOutputScore(offer) {
+  const attrs = offer.attributes ?? {};
+  const output = attrs.output_amount_after_fees ?? attrs.output_amount ?? {};
+  const value = Number(output.value ?? output.usd_value);
+  if (Number.isFinite(value) && value > 0) return value;
+
+  const quantity = Number(output.quantity);
+  return Number.isFinite(quantity) ? quantity : 0;
+}
+
+function chooseBestExecutableOffer(offers) {
+  const executable = offers.filter((offer) => getSwapTransaction(offer.attributes));
+  if (!executable.length) return offers[0];
+
+  return executable.sort((a, b) => getOfferOutputScore(b) - getOfferOutputScore(a))[0];
+}
+
 /**
  * Get a swap/bridge quote from Zerion API.
  */
@@ -60,12 +81,9 @@ export async function getSwapQuote({
     throw err;
   }
 
-  const best = offers.find((offer) => {
-    const attrs = offer.attributes ?? {};
-    return attrs.transaction_swap?.evm || attrs.transaction_swap?.solana;
-  }) ?? offers[0];
+  const best = chooseBestExecutableOffer(offers);
   const attrs = best.attributes;
-  const swapTransaction = attrs.transaction_swap?.evm ?? attrs.transaction_swap?.solana;
+  const swapTransaction = getSwapTransaction(attrs);
 
   if (!swapTransaction) {
     const quoteError = attrs.error;
@@ -76,6 +94,12 @@ export async function getSwapQuote({
     err.quoteError = quoteError;
     throw err;
   }
+  console.log(
+    "[swap] selected route:",
+    attrs.liquidity_source?.name ?? "unknown",
+    "| output:",
+    attrs.output_amount_after_fees?.quantity ?? attrs.output_amount?.quantity ?? "unknown",
+  );
 
   // Extract the chain-specific token address from the transaction data
   // The swap API tx.data often encodes the actual token address used on-chain

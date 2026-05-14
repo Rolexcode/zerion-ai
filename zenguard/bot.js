@@ -46,6 +46,11 @@ if (!process.env.TELEGRAM_BOT_TOKEN) {
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 bot.use(session());
 
+const PNL_IMAGES = {
+  profit: "https://placehold.co/900x360/0f3b2e/eafff4.png?text=ZenGuard+Profit+Position",
+  loss: "https://placehold.co/900x360/4a1218/fff1f2.png?text=ZenGuard+Loss+Position",
+};
+
 function normalizeSwapResult(result) {
   if (typeof result === "string") {
     return { hash: result, outputAmount: null };
@@ -147,6 +152,22 @@ function readableTradeError(err, { action = "trade", chain, symbol } = {}) {
     );
   }
   return message;
+}
+
+async function replyPositionCard(ctx, { isProfit, text, keyboard }) {
+  try {
+    await ctx.replyWithPhoto(isProfit ? PNL_IMAGES.profit : PNL_IMAGES.loss, {
+      caption: text,
+      parse_mode: "Markdown",
+      ...keyboard,
+    });
+  } catch (err) {
+    console.error("[bot] PnL image send failed:", err.message);
+    await ctx.reply(text, {
+      parse_mode: "Markdown",
+      ...keyboard,
+    });
+  }
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
@@ -765,10 +786,11 @@ async function showPositions(ctx) {
       const chainLabel = position.chain === "solana" ? "🟣" : "🔵";
       const chainName = position.chain === "solana" ? "Solana" : position.chain?.toUpperCase();
       const openedAt = new Date(position.openedAt).toDateString();
-      await ctx.reply(
-        `${arrow} *${position.symbol}* ${chainLabel}\n\nChain: ${chainName}\nLive Amount: ${formatTokenAmount(tokenAmount)} ${position.symbol}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Value: ${formatUsd(entryValue)}\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSynced from wallet balance. Sell buttons use a small safety buffer.`,
-        {
-          parse_mode: "Markdown",
+      const positionText = `${arrow} *${position.symbol}* ${chainLabel}\n\nChain: ${chainName}\nLive Amount: ${formatTokenAmount(tokenAmount)} ${position.symbol}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Value: ${formatUsd(entryValue)}\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSynced from wallet balance. Sell buttons use a small safety buffer.`;
+      await replyPositionCard(ctx, {
+        isProfit: roiUSD >= 0,
+        text: positionText,
+        keyboard: {
           ...Markup.inlineKeyboard([
             [
               Markup.button.callback(
@@ -794,7 +816,7 @@ async function showPositions(ctx) {
             ],
           ]),
         },
-      );
+      });
     } catch (err) {
       console.error(
         `[bot] Price fetch failed for ${position.symbol}:`,
