@@ -78,6 +78,26 @@ function formatSignedUsd(value) {
   return `${amount >= 0 ? "+" : "-"}${formatUsd(Math.abs(amount))}`;
 }
 
+function formatHoldDuration(openedAt) {
+  const started = new Date(openedAt).getTime();
+  const elapsedMs = Date.now() - started;
+  if (!Number.isFinite(started) || elapsedMs <= 0) return "just now";
+
+  const totalMinutes = Math.floor(elapsedMs / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function getPositionPair(position) {
+  const quote = position.chain === "solana" ? "SOL" : "ETH";
+  return `${position.symbol}/${quote}`;
+}
+
 function getTxExplorerUrl(chain, hash) {
   if (!hash) return null;
   if (chain === "solana") return `https://solscan.io/tx/${hash}`;
@@ -152,26 +172,32 @@ function readableTradeError(err, { action = "trade", chain, symbol } = {}) {
 function buildPnlImageUrl({
   isProfit,
   symbol,
+  pair,
   chainName,
   currentValue,
   entryValue,
   roiPct,
   roiUSD,
   openedAt,
+  duration,
 }) {
-  const bg = isProfit ? "0f3b2e" : "4a1218";
-  const fg = isProfit ? "eafff4" : "fff1f2";
-  const title = isProfit ? "PROFIT POSITION" : "LOSS POSITION";
+  const bg = isProfit ? "041f1a" : "23080c";
+  const fg = isProfit ? "7CFF9B" : "FF6B6B";
+  const title = isProfit ? "ZEN GUARD PROFIT" : "ZEN GUARD LOSS";
   const sign = roiUSD >= 0 ? "+" : "-";
+  const gainLabel = isProfit ? "Current Gain" : "Current Loss";
   const lines = [
-    `ZenGuard ${title}`,
-    `${symbol} on ${chainName}`,
-    `Value ${formatUsd(currentValue)} | Entry ${formatUsd(entryValue)}`,
-    `PnL ${sign}${formatUsd(Math.abs(roiUSD))} | ROI ${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}%`,
-    `Opened ${openedAt}`,
+    title,
+    pair ?? `${symbol}/${chainName}`,
+    `${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}%`,
+    `Held ${duration}`,
+    `Invested ${formatUsd(entryValue)} | Current ${formatUsd(currentValue)}`,
+    `${gainLabel} ${sign}${formatUsd(Math.abs(roiUSD))}`,
+    `Entered ${openedAt}`,
+    "by RolextheExplorer",
   ];
 
-  return `https://placehold.co/1100x560/${bg}/${fg}.png?font=montserrat&text=${encodeURIComponent(lines.join("\n"))}`;
+  return `https://placehold.co/1200x675/${bg}/${fg}.png?font=montserrat&text=${encodeURIComponent(lines.join("\n"))}`;
 }
 
 async function replyPositionCard(ctx, { imageUrl, text, keyboard }) {
@@ -806,17 +832,21 @@ async function showPositions(ctx) {
       const chainLabel = position.chain === "solana" ? "🟣" : "🔵";
       const chainName = position.chain === "solana" ? "Solana" : position.chain?.toUpperCase();
       const openedAt = new Date(position.openedAt).toDateString();
-      const positionText = `${arrow} *${position.symbol}* ${chainLabel}\n\nChain: ${chainName}\nLive Amount: ${formatTokenAmount(tokenAmount)} ${position.symbol}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Value: ${formatUsd(entryValue)}\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSynced from wallet balance. Sell buttons use a small safety buffer.`;
+      const duration = formatHoldDuration(position.openedAt);
+      const pair = getPositionPair(position);
+      const positionText = `${arrow} *${pair}* ${chainLabel}\n\nChain: ${chainName}\nHeld: ${duration}\nLive Amount: ${formatTokenAmount(tokenAmount)} ${position.symbol}\nInvested: ${formatUsd(entryValue)}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSynced from wallet balance. Sell buttons use a small safety buffer.`;
       await replyPositionCard(ctx, {
         imageUrl: buildPnlImageUrl({
           isProfit: roiUSD >= 0,
           symbol: position.symbol,
+          pair,
           chainName,
           currentValue,
           entryValue,
           roiPct,
           roiUSD,
           openedAt,
+          duration,
         }),
         text: positionText,
         keyboard: {
