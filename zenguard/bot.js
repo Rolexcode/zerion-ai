@@ -119,10 +119,14 @@ bot.start((ctx) => {
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("🔐 My Wallets", "my_wallets")],
-        [Markup.button.callback("👁 Spy on a Wallet", "mode_watch")],
-        [Markup.button.callback("⚡ Quick Trade", "mode_trade")],
-        [Markup.button.callback("📋 My Dashboard", "show_status")],
+        [
+          Markup.button.callback("🔐 My Wallets", "my_wallets"),
+          Markup.button.callback("⚡ Quick Trade", "mode_trade"),
+        ],
+        [
+          Markup.button.callback("👁 Spy Wallet", "mode_watch"),
+          Markup.button.callback("📋 Dashboard", "show_status"),
+        ],
       ]),
     },
   );
@@ -145,8 +149,10 @@ bot.action("my_wallets", async (ctx) => {
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("🟣 Manage Solana Wallet", "manage_solana")],
-        [Markup.button.callback("🔵 Manage EVM Wallet", "manage_evm")],
+        [
+          Markup.button.callback("🟣 Solana", "manage_solana"),
+          Markup.button.callback("🔵 EVM", "manage_evm"),
+        ],
       ]),
     },
   );
@@ -161,8 +167,10 @@ bot.action("manage_solana", async (ctx) => {
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
-          [Markup.button.callback("📊 Check Balance", "analyze_solana")],
-          [Markup.button.callback("🔄 Replace Wallet", "import_solana")],
+          [
+            Markup.button.callback("📊 Balance", "analyze_solana"),
+            Markup.button.callback("🔄 Replace", "import_solana"),
+          ],
           [Markup.button.callback("🗑 Disconnect", "disconnect_solana")],
         ]),
       },
@@ -171,8 +179,10 @@ bot.action("manage_solana", async (ctx) => {
     ctx.reply(`🟣 *Solana Wallet*\n\nNo Solana wallet connected yet.`, {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("📥 Import Existing", "import_solana")],
-        [Markup.button.callback("✨ Generate New", "gen_solana")],
+        [
+          Markup.button.callback("📥 Import", "import_solana"),
+          Markup.button.callback("✨ Generate", "gen_solana"),
+        ],
       ]),
     });
   }
@@ -187,8 +197,10 @@ bot.action("manage_evm", async (ctx) => {
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
-          [Markup.button.callback("📊 Check Balance", "analyze_evm")],
-          [Markup.button.callback("🔄 Replace Wallet", "import_evm")],
+          [
+            Markup.button.callback("📊 Balance", "analyze_evm"),
+            Markup.button.callback("🔄 Replace", "import_evm"),
+          ],
           [Markup.button.callback("🗑 Disconnect", "disconnect_evm")],
         ]),
       },
@@ -197,8 +209,10 @@ bot.action("manage_evm", async (ctx) => {
     ctx.reply(`🔵 *EVM Wallet*\n\nNo EVM wallet connected yet.`, {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("📥 Import Existing", "import_evm")],
-        [Markup.button.callback("✨ Generate New", "gen_evm")],
+        [
+          Markup.button.callback("📥 Import", "import_evm"),
+          Markup.button.callback("✨ Generate", "gen_evm"),
+        ],
       ]),
     });
   }
@@ -468,10 +482,14 @@ async function showStatus(ctx) {
     {
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("🔐 My Wallets", "my_wallets")],
-        [Markup.button.callback("➕ Add Token Guard", "mode_watch")],
-        [Markup.button.callback("⚡ Quick Trade", "mode_trade")],
-        [Markup.button.callback("📈 My Positions", "view_positions")],
+        [
+          Markup.button.callback("🔐 Wallets", "my_wallets"),
+          Markup.button.callback("⚡ Trade", "mode_trade"),
+        ],
+        [
+          Markup.button.callback("➕ Guard", "mode_watch"),
+          Markup.button.callback("📈 Positions", "view_positions"),
+        ],
         [Markup.button.callback("🔴 Stop All", "stop_all")],
       ]),
     },
@@ -603,8 +621,10 @@ bot.action("confirm_buy", async (ctx) => {
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
-          [Markup.button.url("🔎 View Transaction", getTxExplorerUrl(token.chain, txHash))],
-          [Markup.button.callback("📈 View Positions", "view_positions")],
+          [
+            Markup.button.url("🔎 Tx", getTxExplorerUrl(token.chain, txHash)),
+            Markup.button.callback("📈 Positions", "view_positions"),
+          ],
         ]),
       },
     );
@@ -638,8 +658,10 @@ async function showPositions(ctx) {
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
-          [Markup.button.callback("⚡ Quick Trade", "mode_trade")],
-          [Markup.button.callback("🔄 Refresh", "refresh_positions")],
+          [
+            Markup.button.callback("⚡ Quick Trade", "mode_trade"),
+            Markup.button.callback("🔄 Refresh", "refresh_positions"),
+          ],
         ]),
       },
     );
@@ -680,11 +702,11 @@ async function showPositions(ctx) {
             ],
             [
               Markup.button.callback(
-                "🛡️ Set Auto-Sell",
+                "🛡️ Auto-Sell",
                 `autosell_${position.mint}`,
               ),
+              Markup.button.callback("🔄 Refresh", "refresh_positions"),
             ],
-            [Markup.button.callback("🔄 Refresh Position", "refresh_positions")],
           ]),
         },
       );
@@ -699,7 +721,10 @@ async function showPositions(ctx) {
   await ctx.reply(`📊 *Portfolio PnL: ${sign}$${totalPnL.toFixed(4)}*`, {
     parse_mode: "Markdown",
     ...Markup.inlineKeyboard([
-      [Markup.button.callback("🔄 Refresh Positions", "refresh_positions")],
+      [
+        Markup.button.callback("🔄 Refresh", "refresh_positions"),
+        Markup.button.callback("⚡ Trade", "mode_trade"),
+      ],
     ]),
   });
 }
@@ -837,8 +862,10 @@ bot.action("confirm_sell", async (ctx) => {
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
-          [Markup.button.url("🔎 View Transaction", getTxExplorerUrl(chain, txHash))],
-          [Markup.button.callback("📈 Positions", "view_positions")],
+          [
+            Markup.button.url("🔎 Tx", getTxExplorerUrl(chain, txHash)),
+            Markup.button.callback("📈 Positions", "view_positions"),
+          ],
         ]),
       },
     );
