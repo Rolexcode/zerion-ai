@@ -169,7 +169,7 @@ function readableTradeError(err, { action = "trade", chain, symbol } = {}) {
   return message;
 }
 
-function buildPnlImageUrl({
+function buildPnlChartConfig({
   isProfit,
   symbol,
   pair,
@@ -289,12 +289,37 @@ function buildPnlImageUrl({
     }]
   }`;
 
-  return `https://quickchart.io/chart?width=1200&height=675&format=png&version=4&backgroundColor=transparent&c=${encodeURIComponent(config)}`;
+  return config;
+}
+
+async function buildPnlImageUrl(positionData) {
+  const config = buildPnlChartConfig(positionData);
+  const longUrl = `https://quickchart.io/chart?width=1200&height=675&format=png&version=4&backgroundColor=transparent&c=${encodeURIComponent(config)}`;
+
+  try {
+    const response = await fetch("https://quickchart.io/chart/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chart: config,
+        width: 1200,
+        height: 675,
+        format: "png",
+        version: "4",
+        backgroundColor: "transparent",
+      }),
+    });
+    const payload = await response.json();
+    return payload.url || payload.shortUrl || longUrl;
+  } catch (err) {
+    console.error("[bot] PnL short image URL failed:", err.message);
+    return longUrl;
+  }
 }
 
 async function replyPositionCard(ctx, { imageUrl, text, keyboard, editMessageId = null }) {
-  try {
-    if (editMessageId) {
+  if (editMessageId) {
+    try {
       await ctx.telegram.editMessageMedia(
         ctx.chat.id,
         editMessageId,
@@ -307,20 +332,55 @@ async function replyPositionCard(ctx, { imageUrl, text, keyboard, editMessageId 
         },
         keyboard,
       );
-      return;
+      return { message_id: editMessageId };
+    } catch (err) {
+      console.error("[bot] PnL image edit failed:", err.message);
+      try {
+        await ctx.telegram.editMessageText(ctx.chat.id, editMessageId, undefined, text, {
+          parse_mode: "Markdown",
+          ...keyboard,
+        });
+        return { message_id: editMessageId };
+      } catch (textErr) {
+        console.error("[bot] Position text edit failed:", textErr.message);
+      }
     }
-    await ctx.replyWithPhoto(imageUrl, {
+  }
+
+  try {
+    return await ctx.replyWithPhoto(imageUrl, {
       caption: text,
       parse_mode: "Markdown",
       ...keyboard,
     });
   } catch (err) {
     console.error("[bot] PnL image send failed:", err.message);
-    await ctx.reply(text, {
+    return await ctx.reply(text, {
       parse_mode: "Markdown",
       ...keyboard,
     });
   }
+}
+
+async function clearPreviousPositionMessages(ctx) {
+  ctx.session ??= {};
+  const ids = ctx.session?.positionMessageIds ?? [];
+  ctx.session.positionMessageIds = [];
+
+  for (const id of ids) {
+    try {
+      await ctx.telegram.deleteMessage(ctx.chat.id, id);
+    } catch {
+      // Message may already be gone or too old to delete.
+    }
+  }
+}
+
+function rememberPositionMessage(ctx, message) {
+  if (!message?.message_id) return;
+  ctx.session ??= {};
+  ctx.session.positionMessageIds ??= [];
+  ctx.session.positionMessageIds.push(message.message_id);
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
@@ -882,7 +942,7 @@ bot.action("view_positions", async (ctx) => {
 });
 bot.action("refresh_positions", async (ctx) => {
   await ctx.answerCbQuery("Refreshing positions...");
-  showPositions(ctx);
+  showPositions(ctx, { replaceList: true });
 });
 bot.action(/refresh_position_(.+)/, async (ctx) => {
   await ctx.answerCbQuery("Refreshing position...");
@@ -892,13 +952,22 @@ bot.action(/refresh_position_(.+)/, async (ctx) => {
   });
 });
 
-async function showPositions(ctx, { singleMint = null, editMessageId = null } = {}) {
+async function showPositions(ctx, { singleMint = null, editMessageId = null, replaceList = false } = {}) {
+  if (!singleMint) {
+    if (replaceList) {
+      await clearPreviousPositionMessages(ctx);
+    } else {
+      ctx.session ??= {};
+      ctx.session.positionMessageIds = [];
+    }
+  }
+
   const allPositions = await loadPositions(ctx.from.id);
   const positions = singleMint
     ? allPositions.filter((position) => position.mint === singleMint)
     : allPositions;
   if (!positions.length) {
-    return ctx.reply(
+    const emptyMessage = await ctx.reply(
       `📭 *No open positions.*\n\nPaste a contract address to open a trade.`,
       {
         parse_mode: "Markdown",
@@ -910,6 +979,8 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null } = 
         ]),
       },
     );
+    if (!singleMint) rememberPositionMessage(ctx, emptyMessage);
+    return emptyMessage;
   }
   let totalPnL = 0;
   let visiblePositions = 0;
@@ -952,8 +1023,8 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null } = 
       const duration = formatHoldDuration(position.openedAt);
       const pair = getPositionPair(position);
       const positionText = `${arrow} *${pair}* ${chainLabel}\n\nChain: ${chainName}\nHeld: ${duration}\nLive Amount: ${formatTokenAmount(tokenAmount)} ${position.symbol}\nInvested: ${formatUsd(entryValue)}\nCurrent Value: *${formatUsd(currentValue)}*\nEntry Price: $${Number(position.buyPrice).toFixed(8)}\nCurrent Price: $${Number(currentPrice).toFixed(8)}\nPnL: *${sign}${formatUsd(Math.abs(roiUSD))}*\nROI: *${sign}${roiPct.toFixed(2)}%*\nOpened: ${openedAt}\n\nSynced from wallet balance. Sell buttons use a small safety buffer.`;
-      await replyPositionCard(ctx, {
-        imageUrl: buildPnlImageUrl({
+      const positionMessage = await replyPositionCard(ctx, {
+        imageUrl: await buildPnlImageUrl({
           isProfit: roiUSD >= 0,
           symbol: position.symbol,
           pair,
@@ -994,6 +1065,7 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null } = 
         },
         editMessageId,
       });
+      if (!singleMint) rememberPositionMessage(ctx, positionMessage);
     } catch (err) {
       console.error(
         `[bot] Price fetch failed for ${position.symbol}:`,
@@ -1024,7 +1096,7 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null } = 
         console.error("[bot] Position close edit failed:", err.message);
       }
     }
-    return ctx.reply(
+    const emptyMessage = await ctx.reply(
       `📭 *No open positions.*\n\n${removedDust ? `Removed ${removedDust} closed/dust position${removedDust === 1 ? "" : "s"} from tracking.\n\n` : ""}Paste a contract address to open a trade.`,
       {
         parse_mode: "Markdown",
@@ -1036,10 +1108,12 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null } = 
         ]),
       },
     );
+    if (!singleMint) rememberPositionMessage(ctx, emptyMessage);
+    return emptyMessage;
   }
   if (singleMint) return;
   const sign = totalPnL >= 0 ? "+" : "";
-  await ctx.reply(`${removedDust ? `🧹 Removed ${removedDust} closed/dust position${removedDust === 1 ? "" : "s"}.\n\n` : ""}📊 *Portfolio PnL: ${sign}$${totalPnL.toFixed(4)}*`, {
+  const summaryMessage = await ctx.reply(`${removedDust ? `🧹 Removed ${removedDust} closed/dust position${removedDust === 1 ? "" : "s"}.\n\n` : ""}📊 *Portfolio PnL: ${sign}$${totalPnL.toFixed(4)}*`, {
     parse_mode: "Markdown",
     ...Markup.inlineKeyboard([
       [
@@ -1048,6 +1122,7 @@ async function showPositions(ctx, { singleMint = null, editMessageId = null } = 
       ],
     ]),
   });
+  rememberPositionMessage(ctx, summaryMessage);
 }
 
 // ─── SELL ─────────────────────────────────────────────────────────────────────
