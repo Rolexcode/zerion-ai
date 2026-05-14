@@ -135,6 +135,7 @@ function isDustPosition(amount, usdValue = null) {
 }
 
 const LIVE_BALANCE_TIMEOUT_MS = Number(process.env.LIVE_BALANCE_TIMEOUT_MS || 2500);
+const TELEGRAM_PHOTO_TIMEOUT_MS = Number(process.env.TELEGRAM_PHOTO_TIMEOUT_MS || 8000);
 
 function withTimeout(promise, ms, label) {
   let timeoutId;
@@ -309,18 +310,24 @@ function delay(ms) {
 }
 
 async function replyWithPhotoFallback(ctx, imageFile, text, keyboard) {
-  const attempts = 2;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await ctx.replyWithPhoto(imageFile, {
-        caption: text,
-        parse_mode: "Markdown",
-        ...keyboard,
-      });
-    } catch (err) {
-      console.error(`[bot] Photo send failed (${attempt}/${attempts}):`, err.message);
-      if (attempt < attempts) await delay(750);
-    }
+  const photoPromise = ctx.replyWithPhoto(imageFile, {
+    caption: text,
+    parse_mode: "Markdown",
+    ...keyboard,
+  });
+
+  photoPromise.catch((err) => {
+    console.error("[bot] Late photo send failure:", err.message);
+  });
+
+  try {
+    return await withTimeout(
+      photoPromise,
+      TELEGRAM_PHOTO_TIMEOUT_MS,
+      "Telegram photo send",
+    );
+  } catch (err) {
+    console.error("[bot] Photo send skipped, falling back to text:", err.message);
   }
 
   return await ctx.reply(text, {
