@@ -292,30 +292,41 @@ function buildPnlCardSvg({
 async function buildPnlImageFile(positionData) {
   try {
     const svg = buildPnlCardSvg(positionData);
-    const png = await sharp(Buffer.from(svg))
-      .png({ compressionLevel: 9, palette: true })
+    const image = await sharp(Buffer.from(svg))
+      .resize(900, 506, { fit: "cover" })
+      .jpeg({ quality: 82, mozjpeg: true })
       .toBuffer();
-    return Input.fromBuffer(png, "zenguard-pnl.png");
+    console.log(`[bot] PnL card rendered: ${Math.round(image.length / 1024)}KB`);
+    return Input.fromBuffer(image, "zenguard-pnl.jpg");
   } catch (err) {
     console.error("[bot] PnL image render failed:", err.message);
     return null;
   }
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function replyWithPhotoFallback(ctx, imageFile, text, keyboard) {
-  try {
-    return await ctx.replyWithPhoto(imageFile, {
-      caption: text,
-      parse_mode: "Markdown",
-      ...keyboard,
-    });
-  } catch (err) {
-    console.error("[bot] Photo send failed, falling back to text:", err.message);
-    return await ctx.reply(text, {
-      parse_mode: "Markdown",
-      ...keyboard,
-    });
+  const attempts = 2;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await ctx.replyWithPhoto(imageFile, {
+        caption: text,
+        parse_mode: "Markdown",
+        ...keyboard,
+      });
+    } catch (err) {
+      console.error(`[bot] Photo send failed (${attempt}/${attempts}):`, err.message);
+      if (attempt < attempts) await delay(750);
+    }
   }
+
+  return await ctx.reply(text, {
+    parse_mode: "Markdown",
+    ...keyboard,
+  });
 }
 
 async function replyPositionCard(ctx, { imageFile, text, keyboard, editMessageId = null }) {
