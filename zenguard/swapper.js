@@ -7,7 +7,7 @@
  */
 
 import axios from "axios";
-import { Connection, VersionedTransaction, Transaction } from "@solana/web3.js";
+import { Connection, VersionedTransaction, Transaction, PublicKey } from "@solana/web3.js";
 import { ethers } from "ethers";
 import { getSolanaKeypair, getEVMWallet } from "./wallet.js";
 
@@ -142,6 +142,23 @@ export async function getEVMTokenBalance(encryptedKey, chain, tokenAddress) {
   ]);
 
   return ethers.formatUnits(balance, Number(decimals));
+}
+
+export async function getSolanaTokenBalance(encryptedKey, tokenMint) {
+  validateAddress(tokenMint, "solana");
+
+  const keypair = getSolanaKeypair(encryptedKey);
+  const owner = keypair.publicKey;
+  const mint = new PublicKey(tokenMint);
+  const accounts = await connection.getParsedTokenAccountsByOwner(owner, { mint });
+
+  let total = 0;
+  for (const account of accounts.value ?? []) {
+    const tokenAmount = account.account.data.parsed?.info?.tokenAmount;
+    total += Number(tokenAmount?.uiAmountString ?? tokenAmount?.uiAmount ?? 0);
+  }
+
+  return String(total);
 }
 
 // ─── GET TOKEN INFO — DEXSCREENER ─────────────────────────────────────────────

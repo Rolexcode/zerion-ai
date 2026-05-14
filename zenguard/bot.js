@@ -14,6 +14,7 @@ import {
   swapToUSDCEVM,
   swapSolanaTokens,
   getEVMTokenBalance,
+  getSolanaTokenBalance,
   getTokenInfo,
   isContractAddress,
 } from "./swapper.js";
@@ -96,6 +97,12 @@ function formatTxLink(chain, hash) {
   const url = getTxExplorerUrl(chain, hash);
   if (!url) return "`pending`";
   return `[${hash.slice(0, 10)}...${hash.slice(-8)}](${url})`;
+}
+
+function sizeSellAmount(amount, pct) {
+  const raw = (Number(amount) * Number(pct)) / 100;
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return Number((raw * 0.995).toPrecision(12));
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
@@ -709,7 +716,14 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
   const position = positions.find((p) => p.mint === mint);
   if (!position) return ctx.reply("Position not found.");
   let sourceAmount = parseFloat(position.amount);
-  if (position.chain && position.chain !== "solana") {
+  if (position.chain === "solana") {
+    try {
+      const encryptedKey = await loadEncryptedKey(ctx.from.id, "solana");
+      sourceAmount = parseFloat(await getSolanaTokenBalance(encryptedKey, mint));
+    } catch (err) {
+      console.error("[bot] Live Solana balance fetch failed:", err.message);
+    }
+  } else if (position.chain) {
     try {
       const encryptedKey = await loadEncryptedKey(ctx.from.id, "evm");
       sourceAmount = parseFloat(await getEVMTokenBalance(encryptedKey, position.chain, mint));
@@ -717,7 +731,7 @@ bot.action(/sell_pct_(.+)_(\d+)/, async (ctx) => {
       console.error("[bot] Live balance fetch failed:", err.message);
     }
   }
-  const sellAmount = Number(((sourceAmount * pct) / 100).toPrecision(12));
+  const sellAmount = sizeSellAmount(sourceAmount, pct);
   if (!Number.isFinite(sellAmount) || sellAmount <= 0) {
     return ctx.reply("No sellable token balance found for this position.");
   }

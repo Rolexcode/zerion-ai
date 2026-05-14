@@ -60,8 +60,22 @@ export async function getSwapQuote({
     throw err;
   }
 
-  const best = offers[0];
+  const best = offers.find((offer) => {
+    const attrs = offer.attributes ?? {};
+    return attrs.transaction_swap?.evm || attrs.transaction_swap?.solana;
+  }) ?? offers[0];
   const attrs = best.attributes;
+  const swapTransaction = attrs.transaction_swap?.evm ?? attrs.transaction_swap?.solana;
+
+  if (!swapTransaction) {
+    const quoteError = attrs.error;
+    const detail = quoteError?.message || "No executable swap transaction was returned.";
+    const code = quoteError?.code ? ` (${quoteError.code})` : "";
+    const err = new Error(`Zerion quote is not executable: ${detail}${code}`);
+    err.code = quoteError?.code || "no_executable_transaction";
+    err.quoteError = quoteError;
+    throw err;
+  }
 
   // Extract the chain-specific token address from the transaction data
   // The swap API tx.data often encodes the actual token address used on-chain
@@ -103,7 +117,7 @@ export async function getSwapQuote({
   },
   spender: attrs.transaction_approve?.evm?.to ?? null,
   approvalTransaction: attrs.transaction_approve?.evm ?? null,
-  transaction: attrs.transaction_swap?.evm ?? attrs.transaction_swap?.solana,
+  transaction: swapTransaction,
   fromChain,
   toChain: toChain || fromChain,
 };

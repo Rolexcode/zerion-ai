@@ -7,7 +7,7 @@ import {
   savePosition,
   removePosition,
 } from './store.js';
-import { swapToUSDCSolana, swapToUSDCEVM, getEVMTokenBalance, getTokenInfo } from './swapper.js';
+import { swapToUSDCSolana, swapToUSDCEVM, getEVMTokenBalance, getSolanaTokenBalance, getTokenInfo } from './swapper.js';
 
 const activeMonitors = new Map();
 const alertCooldowns = new Map();
@@ -39,7 +39,7 @@ function calculateSwapAmount(position, swapPct) {
   const pct = Number(swapPct);
   if (!Number.isFinite(positionAmount) || positionAmount <= 0) return null;
   if (!Number.isFinite(pct) || pct <= 0 || pct > 100) return null;
-  return Number(((positionAmount * pct) / 100).toPrecision(12));
+  return Number((((positionAmount * pct) / 100) * 0.995).toPrecision(12));
 }
 
 async function updatePositionAfterSwap(userId, position, swapAmount, swapPct) {
@@ -150,7 +150,13 @@ export async function scheduleMonitoring(userId, address, ctx) {
         const swapPct = watched.swapPercent ?? 100;
         const positions = await loadPositions(userId);
         const position = findPosition(positions, watched, chain);
-        if (position && chain !== 'solana') {
+        if (position && chain === 'solana') {
+          try {
+            position.amount = await getSolanaTokenBalance(encryptedKey, watched.mint);
+          } catch (err) {
+            console.error(`[monitor] Live Solana balance fetch failed for ${watched.token}:`, err.message);
+          }
+        } else if (position) {
           try {
             position.amount = await getEVMTokenBalance(encryptedKey, chain, watched.mint);
           } catch (err) {
